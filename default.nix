@@ -20,7 +20,10 @@ let
   };
 in rustPlatform.buildRustPackage {
   name = "ckb";
-  src = ./.;
+  src = pkgs.lib.cleanSourceWith {
+    filter = path: type: !(builtins.any (x: x == baseNameOf path) ["target" "result" ".git" "tags" "TAGS"]);
+    src = ./.;
+  };
   nativeBuildInputs = [ pkgs.openssl pkgs.pkgconfig ];
   buildInputs = [ rustPackages.rust-std ];
   verifyCargoDeps = true;
