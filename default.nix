@@ -21,7 +21,18 @@ let
 in rustPlatform.buildRustPackage {
   name = "ckb";
   src = pkgs.lib.cleanSourceWith {
-    filter = path: type: !(builtins.any (x: x == baseNameOf path) ["target" "result" ".git" "tags" "TAGS"]);
+    filter = path: type: !(builtins.any (x: x == baseNameOf path) [
+      # TODO only filter from root
+      "result" ".git" "tags" "TAGS"
+      "target"
+      "ckb.toml"
+      "ckb-miner.toml"
+      "data"
+      "specs"
+      "ckb-dev"
+      "ckb-testnet"
+      "ckb-mainnet"
+    ]);
     src = ./.;
   };
   nativeBuildInputs = [ pkgs.openssl pkgs.pkgconfig ];
