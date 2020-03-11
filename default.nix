@@ -18,23 +18,10 @@ let
     inherit (rustPackages) cargo;
     rustc = rustPackages.rust;
   };
+  inherit (import ./nix/gitignore.nix { inherit (pkgs) lib; }) gitignoreSource;
 in rustPlatform.buildRustPackage {
   name = "ckb";
-  src = pkgs.lib.cleanSourceWith {
-    filter = path: type: !(builtins.any (x: x == baseNameOf path) [
-      # TODO only filter from root
-      "result" ".git" "tags" "TAGS"
-      "target"
-      "ckb.toml"
-      "ckb-miner.toml"
-      "data"
-      "specs"
-      "ckb-dev"
-      "ckb-testnet"
-      "ckb-mainnet"
-    ]);
-    src = ./.;
-  };
+  src = gitignoreSource ./.;
   nativeBuildInputs = [ pkgs.openssl pkgs.pkgconfig ];
   buildInputs = [ rustPackages.rust-std ];
   verifyCargoDeps = true;

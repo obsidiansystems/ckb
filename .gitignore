@@ -55,3 +55,7 @@ cobertura.xml
 
 # proptest
 **/proptest-regressions
+
+# nix
+result
+result-*
