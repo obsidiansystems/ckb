@@ -1,5 +1,5 @@
 use crate::error::RPCError;
-use ckb_jsonrpc_types::{BannedAddr, Node, NodeAddress, Timestamp};
+use ckb_jsonrpc_types::{BannedAddr, LocalNode, NodeAddress, RemoteNode, Timestamp};
 use ckb_network::{MultiaddrExt, NetworkController};
 use faketime::unix_time_as_millis;
 use jsonrpc_core::Result;
@@ -13,11 +13,11 @@ const DEFAULT_BAN_DURATION: u64 = 24 * 60 * 60 * 1000; // 1 day
 pub trait NetworkRpc {
     // curl -d '{"id": 2, "jsonrpc": "2.0", "method":"local_node_info","params": []}' -H 'content-type:application/json' 'http://localhost:8114'
     #[rpc(name = "local_node_info")]
-    fn local_node_info(&self) -> Result<Node>;
+    fn local_node_info(&self) -> Result<LocalNode>;
 
     // curl -d '{"id": 2, "jsonrpc": "2.0", "method":"get_peers","params": []}' -H 'content-type:application/json' 'http://localhost:8114'
     #[rpc(name = "get_peers")]
-    fn get_peers(&self) -> Result<Vec<Node>>;
+    fn get_peers(&self) -> Result<Vec<RemoteNode>>;
 
     // curl -d '{"id": 2, "jsonrpc": "2.0", "method":"get_banned_addresses","params": []}' -H 'content-type:application/json' 'http://localhost:8114'
     #[rpc(name = "get_banned_addresses")]
@@ -40,10 +40,9 @@ pub(crate) struct NetworkRpcImpl {
 }
 
 impl NetworkRpc for NetworkRpcImpl {
-    fn local_node_info(&self) -> Result<Node> {
-        Ok(Node {
-            version: self.network_controller.node_version().to_string(),
-            is_outbound: None,
+    fn local_node_info(&self) -> Result<LocalNode> {
+        Ok(LocalNode {
+            version: self.network_controller.version().to_owned(),
             node_id: self.network_controller.node_id(),
             addresses: self
                 .network_controller
@@ -57,53 +56,45 @@ impl NetworkRpc for NetworkRpcImpl {
         })
     }
 
-    fn get_peers(&self) -> Result<Vec<Node>> {
+    fn get_peers(&self) -> Result<Vec<RemoteNode>> {
         let peers = self.network_controller.connected_peers();
-        Ok(peers
-            .into_iter()
-            .map(|(peer_id, peer)| {
-                let mut addresses: HashMap<_, _> = peer
-                    .listened_addrs
-                    .iter()
-                    .filter_map(|addr| {
-                        if let Ok((ip_addr, addr)) = addr.extract_ip_addr().and_then(|ip_addr| {
-                            addr.attach_p2p(&peer_id).map(|addr| (ip_addr, addr))
-                        }) {
-                            Some((
-                                ip_addr,
-                                NodeAddress {
-                                    address: addr.to_string(),
-                                    score: 1.into(),
-                                },
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if peer.is_outbound() {
-                    if let Ok(ip_addr) = peer.connected_addr.extract_ip_addr() {
-                        addresses.insert(
-                            ip_addr,
-                            NodeAddress {
-                                address: peer.connected_addr.to_string(),
-                                score: u64::from(std::u8::MAX).into(),
-                            },
-                        );
-                    }
+        let mut nodes = Vec::with_capacity(peers.len());
+        for (peer_id, peer) in peers.into_iter() {
+            let mut addresses = vec![&peer.connected_addr];
+            addresses.extend(peer.listened_addrs.iter());
+
+            let mut node_addresses = HashMap::with_capacity(addresses.len());
+            for address in addresses {
+                if let Ok(ip_port) = address.extract_ip_addr() {
+                    let p2p_address = address.attach_p2p(&peer_id).expect("always ok");
+                    let score = self
+                        .network_controller
+                        .addr_info(&ip_port)
+                        .map(|addr_info| addr_info.score)
+                        .unwrap_or(1);
+                    let non_negative_score = if score > 0 { score as u64 } else { 0 };
+                    node_addresses.insert(
+                        ip_port,
+                        NodeAddress {
+                            address: p2p_address.to_string(),
+                            score: non_negative_score.into(),
+                        },
+                    );
                 }
-                let addresses = addresses.values().cloned().collect();
-                Node {
-                    is_outbound: Some(peer.is_outbound()),
-                    version: peer
-                        .identify_info
-                        .map(|info| info.client_version)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    node_id: peer_id.to_base58(),
-                    addresses,
-                }
-            })
-            .collect())
+            }
+
+            nodes.push(RemoteNode {
+                is_outbound: peer.is_outbound(),
+                version: peer
+                    .identify_info
+                    .map(|info| info.client_version)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                node_id: peer_id.to_base58(),
+                addresses: node_addresses.values().cloned().collect(),
+            });
+        }
+
+        Ok(nodes)
     }
 
     fn get_banned_addresses(&self) -> Result<Vec<BannedAddr>> {

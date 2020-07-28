@@ -1,9 +1,9 @@
 mod dummy;
 mod eaglesong_simple;
 
-use crate::config::WorkerConfig;
+use ckb_app_config::MinerWorkerConfig;
 use ckb_logger::error;
-use ckb_pow::{DummyPowEngine, EaglesongPowEngine, PowEngine};
+use ckb_pow::{DummyPowEngine, EaglesongBlake2bPowEngine, EaglesongPowEngine, PowEngine};
 use ckb_types::{packed::Byte32, U256};
 use crossbeam_channel::{unbounded, Sender};
 use dummy::Dummy;
@@ -13,9 +13,6 @@ use rand::{random, Rng};
 use std::ops::Range;
 use std::sync::Arc;
 use std::thread;
-
-pub use dummy::DummyConfig;
-pub use eaglesong_simple::EaglesongSimpleConfig;
 
 #[derive(Clone)]
 pub enum WorkerMessage {
@@ -63,12 +60,12 @@ const PROGRESS_BAR_TEMPLATE: &str = "{prefix:.bold.dim} {spinner:.green} [{elaps
 
 pub fn start_worker(
     pow: Arc<dyn PowEngine>,
-    config: &WorkerConfig,
+    config: &MinerWorkerConfig,
     nonce_tx: Sender<(Byte32, u128)>,
     mp: &MultiProgress,
 ) -> WorkerController {
     match config {
-        WorkerConfig::Dummy(config) => {
+        MinerWorkerConfig::Dummy(config) => {
             if pow.as_any().downcast_ref::<DummyPowEngine>().is_some() {
                 let worker_name = "Dummy-Worker";
                 let pb = mp.add(ProgressBar::new(100));
@@ -90,8 +87,14 @@ pub fn start_worker(
                 panic!("incompatible pow engine and worker type");
             }
         }
-        WorkerConfig::EaglesongSimple(config) => {
-            if pow.as_any().downcast_ref::<EaglesongPowEngine>().is_some() {
+        MinerWorkerConfig::EaglesongSimple(config) => {
+            let extra_hash_function = config.extra_hash_function;
+            if pow.as_any().downcast_ref::<EaglesongPowEngine>().is_some()
+                || pow
+                    .as_any()
+                    .downcast_ref::<EaglesongBlake2bPowEngine>()
+                    .is_some()
+            {
                 let worker_txs = (0..config.threads)
                     .map(|i| {
                         let worker_name = format!("EaglesongSimple-Worker-{}", i);
@@ -107,7 +110,8 @@ pub fn start_worker(
                         thread::Builder::new()
                             .name(worker_name)
                             .spawn(move || {
-                                let mut worker = EaglesongSimple::new(nonce_tx, worker_rx);
+                                let mut worker =
+                                    EaglesongSimple::new(nonce_tx, worker_rx, extra_hash_function);
                                 let rng = nonce_generator(nonce_range);
                                 worker.run(rng, pb);
                             })

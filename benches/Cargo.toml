@@ -1,6 +1,6 @@
 [package]
 name = "ckb-benches"
-version = "0.30.1-pre"
+version = "0.34.1"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -26,7 +26,8 @@ ckb-crypto = { path = "../util/crypto" }
 faketime = "0.2.0"
 ckb-jsonrpc-types = { path = "../util/jsonrpc-types" }
 ckb-verification = { path = "../verification" }
-ckb-tx-pool = { path = "../tx-pool" }
+ckb-app-config = { path = "../util/app-config" }
+ckb-fee-estimator = { path = "../util/fee-estimator" }
 
 [[bench]]
 name = "bench_main"

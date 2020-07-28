@@ -1,6 +1,6 @@
 [package]
 name = "ckb-tx-pool"
-version = "0.30.1-pre"
+version = "0.34.1"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -8,7 +8,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
 ckb-types = { path = "../util/types" }
 ckb-logger = {path = "../util/logger"}
 ckb-verification = { path = "../verification" }
@@ -23,9 +22,9 @@ ckb-jsonrpc-types = { path = "../util/jsonrpc-types" }
 ckb-chain-spec = { path = "../spec" }
 ckb-snapshot = { path = "../util/snapshot" }
 ckb-error = { path = "../error" }
-futures = "0.1"
-tokio = "0.1"
+tokio = { version = "0.2", features = ["sync", "blocking", "rt-threaded", "macros"] }
 crossbeam-channel = "0.3"
-ckb-future-executor = { path = "../util/future-executor" }
+ckb-async-runtime = { path = "../util/runtime" }
 ckb-stop-handler = { path = "../util/stop-handler" }
 ckb-fee-estimator = { path = "../util/fee-estimator" }
+ckb-app-config = { path = "../util/app-config" }

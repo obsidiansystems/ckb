@@ -4,8 +4,7 @@ use crate::utils::{
 };
 use crate::{Net, Spec, TestProtocol, DEFAULT_TX_PROPOSAL_WINDOW};
 use ckb_dao::DaoCalculator;
-use ckb_network::bytes::Bytes;
-use ckb_sync::NetworkProtocol;
+use ckb_network::{bytes::Bytes, SupportProtocols};
 use ckb_test_chain_utils::MockStore;
 use ckb_types::{
     core::{
@@ -48,7 +47,7 @@ impl Spec for CompactBlockEmptyParentUnknown {
             .build();
         let tip_block = node.get_tip_block();
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&parent_unknown_block),
         );
@@ -82,7 +81,7 @@ impl Spec for CompactBlockEmpty {
 
         let new_empty_block = node.new_block(None, None, None);
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&new_empty_block),
         );
@@ -122,7 +121,7 @@ impl Spec for CompactBlockPrefilled {
             .transaction(new_tx)
             .build();
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block_with_prefilled(&new_block, vec![1]),
         );
@@ -171,7 +170,7 @@ impl Spec for CompactBlockMissingFreshTxs {
             .transaction(new_tx)
             .build();
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&new_block),
         );
@@ -237,7 +236,7 @@ impl Spec for CompactBlockMissingNotFreshTxs {
         // Relay the target block
         clear_messages(&net);
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&new_block),
         );
@@ -294,7 +293,7 @@ impl Spec for CompactBlockLoseGetBlockTransactions {
         // Net send the compact block to node0, but dose not send the corresponding missing
         // block transactions. It will make node0 unable to reconstruct the complete block
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id0,
             build_compact_block(&block),
         );
@@ -334,8 +333,6 @@ impl Spec for CompactBlockRelayParentOfOrphanBlock {
     fn run(&self, net: &mut Net) {
         let node = &net.nodes[0];
         net.exit_ibd_mode();
-        net.connect(node);
-        let (peer_id, _, _) = net.receive();
 
         node.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
         // Proposal a tx, and grow up into proposal window
@@ -432,31 +429,37 @@ impl Spec for CompactBlockRelayParentOfOrphanBlock {
             .build();
         let old_tip = node.get_tip_block().header().number();
 
+        net.connect(node);
+        let (peer_id, _, _) = net.receive();
+
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&parent),
         );
-        // pending for GetBlockTransactions
-        clear_messages(&net);
 
         net.send(
-            NetworkProtocol::SYNC.into(),
+            SupportProtocols::Sync.protocol_id(),
             peer_id,
             build_header(&parent.header()),
         );
         net.send(
-            NetworkProtocol::SYNC.into(),
+            SupportProtocols::Sync.protocol_id(),
             peer_id,
             build_header(&block.header()),
         );
-        clear_messages(&net);
 
-        net.send(NetworkProtocol::SYNC.into(), peer_id, build_block(&block));
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_block_transactions(&parent),
+        );
+
+        clear_messages(&net);
+        net.send(
+            SupportProtocols::Sync.protocol_id(),
+            peer_id,
+            build_block(&block),
         );
 
         let ret = wait_until(20, move || {
@@ -497,7 +500,7 @@ impl Spec for CompactBlockRelayLessThenSharedBestKnown {
             .map(|i| node1.rpc_client().get_header_by_number(i).unwrap().into())
             .collect();
         net.send(
-            NetworkProtocol::SYNC.into(),
+            SupportProtocols::Sync.protocol_id(),
             peer_id,
             build_headers(&headers),
         );
@@ -515,7 +518,7 @@ impl Spec for CompactBlockRelayLessThenSharedBestKnown {
 
         let new_block = node0.new_block(None, None, None);
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
             build_compact_block(&new_block),
         );

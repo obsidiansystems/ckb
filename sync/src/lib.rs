@@ -18,7 +18,7 @@ pub use crate::net_time_checker::NetTimeProtocol;
 pub use crate::relayer::Relayer;
 pub use crate::status::{Status, StatusCode};
 pub use crate::synchronizer::Synchronizer;
-pub use crate::types::SyncSharedState;
+pub use crate::types::SyncShared;
 use std::time::Duration;
 
 pub const MAX_HEADERS_LEN: usize = 2_000;
@@ -26,32 +26,30 @@ pub const MAX_INVENTORY_LEN: usize = 50_000;
 pub const MAX_SCHEDULED_LEN: usize = 4 * 1024;
 pub const MAX_BLOCKS_TO_ANNOUNCE: usize = 8;
 pub const MAX_UNCONNECTING_HEADERS: usize = 10;
-pub const MAX_BLOCKS_IN_TRANSIT_PER_PEER: usize = 16;
 pub const MAX_TIP_AGE: u64 = 24 * 60 * 60 * 1000;
 pub const STALE_RELAY_AGE_LIMIT: u64 = 30 * 24 * 60 * 60 * 1000;
 
+/* About Download Scheduler */
+pub const INIT_BLOCKS_IN_TRANSIT_PER_PEER: usize = 16;
+pub const MAX_BLOCKS_IN_TRANSIT_PER_PEER: usize = 128;
+pub const CHECK_POINT_WINDOW: u64 = (MAX_BLOCKS_IN_TRANSIT_PER_PEER * 4) as u64;
+
+// Time recording window size, ibd period scheduler dynamically adjusts frequency
+// for acquisition/analysis generating dynamic time range
+pub(crate) const TIME_TRACE_SIZE: usize = MAX_BLOCKS_IN_TRANSIT_PER_PEER * 4;
+// Fast Zone Boundaries for the Time Window
+pub(crate) const FAST_INDEX: usize = TIME_TRACE_SIZE / 3;
+// Normal Zone Boundaries for the Time Window
+pub(crate) const NORMAL_INDEX: usize = TIME_TRACE_SIZE * 4 / 5;
+// Low Zone Boundaries for the Time Window
+pub(crate) const LOW_INDEX: usize = TIME_TRACE_SIZE * 9 / 10;
+
 pub(crate) const LOG_TARGET_RELAY: &str = "ckb-relay";
-
-use ckb_network::ProtocolId;
-
-pub enum NetworkProtocol {
-    SYNC = 100,
-    RELAY = 101,
-    TIME = 102,
-    ALERT = 110,
-}
-
-impl Into<ProtocolId> for NetworkProtocol {
-    fn into(self) -> ProtocolId {
-        (self as usize).into()
-    }
-}
 
 //  Timeout = base + per_header * (expected number of headers)
 pub const HEADERS_DOWNLOAD_TIMEOUT_BASE: u64 = 6 * 60 * 1000; // 6 minutes
 pub const HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER: u64 = 1; // 1ms/header
 pub const POW_SPACE: u64 = 10_000; // 10s
-pub const MAX_PEERS_PER_BLOCK: usize = 2;
 
 // Protect at least this many outbound peers from disconnection due to slow
 // behind headers chain.
@@ -64,6 +62,11 @@ pub const EVICTION_HEADERS_RESPONSE_TIME: u64 = 120 * 1000; // 2 minutes
 pub const MAX_LOCATOR_SIZE: usize = 101;
 
 pub const BLOCK_DOWNLOAD_TIMEOUT: u64 = 30 * 1000; // 30s
+
+// Size of the "block download window": how far ahead of our current height do we fetch?
+// Larger windows tolerate larger download speed differences between peers, but increase the
+// potential degree of disordering of blocks.
+pub const BLOCK_DOWNLOAD_WINDOW: u64 = 1024 * 8; // 1024 * default_outbound_peers
 
 pub const RETRY_ASK_TX_TIMEOUT_INCREASE: Duration = Duration::from_secs(30);
 

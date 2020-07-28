@@ -5,6 +5,7 @@ mod indexer;
 mod mining;
 mod p2p;
 mod relay;
+mod rpc;
 mod sync;
 mod tx_pool;
 
@@ -15,20 +16,22 @@ pub use indexer::*;
 pub use mining::*;
 pub use p2p::*;
 pub use relay::*;
+pub use rpc::*;
 pub use sync::*;
 pub use tx_pool::*;
 
 use crate::Net;
 use ckb_app_config::CKBAppConfig;
 use ckb_chain_spec::ChainSpec;
-use ckb_network::{ProtocolId, ProtocolVersion};
-use ckb_sync::NetworkProtocol;
-use ckb_tx_pool::FeeRate;
+use ckb_fee_estimator::FeeRate;
+use ckb_network::{ProtocolId, ProtocolVersion, SupportProtocols};
 
 #[macro_export]
 macro_rules! name {
     ($name:literal) => {
-        fn name(&self) -> &'static str { $name }
+        fn name(&self) -> &'static str {
+            $name
+        }
     };
 }
 
@@ -123,7 +126,7 @@ pub struct TestProtocol {
 impl TestProtocol {
     pub fn sync() -> Self {
         Self {
-            id: NetworkProtocol::SYNC.into(),
+            id: SupportProtocols::Sync.protocol_id(),
             protocol_name: "syn".to_string(),
             supported_versions: vec!["1".to_string()],
         }
@@ -131,7 +134,7 @@ impl TestProtocol {
 
     pub fn relay() -> Self {
         Self {
-            id: NetworkProtocol::RELAY.into(),
+            id: SupportProtocols::Relay.protocol_id(),
             protocol_name: "rel".to_string(),
             supported_versions: vec!["1".to_string()],
         }

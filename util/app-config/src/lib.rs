@@ -1,14 +1,16 @@
 mod app_config;
 mod args;
 pub mod cli;
+mod configs;
 mod exit_code;
 mod sentry_config;
 
 pub use app_config::{AppConfig, CKBAppConfig, MinerAppConfig};
 pub use args::{
-    ExportArgs, ImportArgs, InitArgs, MinerArgs, ProfArgs, ResetDataArgs, RunArgs, StatsArgs,
+    ExportArgs, ImportArgs, InitArgs, MinerArgs, PeerIDArgs, ReplayArgs, ResetDataArgs, RunArgs,
+    StatsArgs,
 };
-pub use ckb_tx_pool::BlockAssemblerConfig;
+pub use configs::*;
 pub use exit_code::ExitCode;
 
 use ckb_build_info::Version;
@@ -21,9 +23,9 @@ use std::path::PathBuf;
 pub(crate) const LOG_TARGET_SENTRY: &str = "sentry";
 
 pub struct Setup {
-    subcommand_name: String,
-    config: AppConfig,
-    is_sentry_enabled: bool,
+    pub subcommand_name: String,
+    pub config: AppConfig,
+    pub is_sentry_enabled: bool,
 }
 
 pub struct SetupGuard {
@@ -105,50 +107,56 @@ impl Setup {
         })
     }
 
-    pub fn miner(self) -> Result<MinerArgs, ExitCode> {
+    pub fn miner<'m>(self, matches: &ArgMatches<'m>) -> Result<MinerArgs, ExitCode> {
         let spec = self.chain_spec()?;
+        let memory_tracker = self.config.memory_tracker().to_owned();
         let config = self.config.into_miner()?;
         let pow_engine = spec.pow_engine();
+        let limit = match value_t!(matches, cli::ARG_LIMIT, u128) {
+            Ok(l) => l,
+            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => 0,
+            Err(e) => {
+                return Err(e.into());
+            }
+        };
 
         Ok(MinerArgs {
             pow_engine,
             config: config.miner,
+            memory_tracker,
+            limit,
         })
     }
 
-    pub fn prof<'m>(self, matches: &ArgMatches<'m>) -> Result<ProfArgs, ExitCode> {
+    pub fn replay<'m>(self, matches: &ArgMatches<'m>) -> Result<ReplayArgs, ExitCode> {
         let consensus = self.consensus()?;
         let config = self.config.into_ckb()?;
-        let from = value_t!(matches, cli::ARG_FROM, u64)?;
-        let to = value_t!(matches, cli::ARG_TO, u64)?;
-
-        Ok(ProfArgs {
+        let tmp_target = value_t!(matches, cli::ARG_TMP_TARGET, PathBuf)?;
+        let profile = if matches.is_present(cli::ARG_PROFILE) {
+            let from = option_value_t!(matches, cli::ARG_FROM, u64)?;
+            let to = option_value_t!(matches, cli::ARG_TO, u64)?;
+            Some((from, to))
+        } else {
+            None
+        };
+        let sanity_check = matches.is_present(cli::ARG_SANITY_CHECK);
+        let full_verfication = matches.is_present(cli::ARG_FULL_VERFICATION);
+        Ok(ReplayArgs {
             config,
             consensus,
-            from,
-            to,
+            tmp_target,
+            profile,
+            sanity_check,
+            full_verfication,
         })
     }
 
     pub fn stats<'m>(self, matches: &ArgMatches<'m>) -> Result<StatsArgs, ExitCode> {
         let consensus = self.consensus()?;
         let config = self.config.into_ckb()?;
-        // There are two types of errors,
-        // parse failures and those where the argument wasn't present
-        let from = match value_t!(matches, cli::ARG_FROM, u64) {
-            Ok(from) => Some(from),
-            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => None,
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
-        let to = match value_t!(matches, cli::ARG_TO, u64) {
-            Ok(to) => Some(to),
-            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => None,
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
+
+        let from = option_value_t!(matches, cli::ARG_FROM, u64)?;
+        let to = option_value_t!(matches, cli::ARG_TO, u64)?;
 
         Ok(StatsArgs {
             config,
@@ -311,7 +319,7 @@ impl Setup {
         result
     }
 
-    fn consensus(&self) -> Result<Consensus, ExitCode> {
+    pub fn consensus(&self) -> Result<Consensus, ExitCode> {
         let result = consensus_from_spec(&self.chain_spec()?);
 
         if let Ok(consensus) = &result {
@@ -324,6 +332,39 @@ impl Setup {
 
         result
     }
+
+    pub fn peer_id<'m>(matches: &ArgMatches<'m>) -> Result<PeerIDArgs, ExitCode> {
+        let path = matches.value_of(cli::ARG_SECRET_PATH).unwrap();
+        match read_secret_key(path.into()) {
+            Ok(Some(key)) => Ok(PeerIDArgs {
+                peer_id: key.peer_id(),
+            }),
+            Err(_) => Err(ExitCode::Failure),
+            Ok(None) => Err(ExitCode::IO),
+        }
+    }
+
+    pub fn gen<'m>(matches: &ArgMatches<'m>) -> Result<(), ExitCode> {
+        let path = matches.value_of(cli::ARG_SECRET_PATH).unwrap();
+        configs::write_secret_to_file(&configs::generate_random_key(), path.into())
+            .map_err(|_| ExitCode::IO)
+    }
+}
+
+// There are two types of errors,
+// parse failures and those where the argument wasn't present
+#[macro_export]
+macro_rules! option_value_t {
+    ($m:ident, $v:expr, $t:ty) => {
+        option_value_t!($m.value_of($v), $t)
+    };
+    ($m:ident.value_of($v:expr), $t:ty) => {
+        match value_t!($m.value_of($v), $t) {
+            Ok(from) => Ok(Some(from)),
+            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
 }
 
 fn is_daemon(subcommand_name: &str) -> bool {

@@ -1,28 +1,30 @@
-use crate::config::Config;
 use crate::module::{
-    AlertRpc, AlertRpcImpl, ChainRpc, ChainRpcImpl, ExperimentRpc, ExperimentRpcImpl, IndexerRpc,
-    IndexerRpcImpl, IntegrationTestRpc, IntegrationTestRpcImpl, MinerRpc, MinerRpcImpl, NetworkRpc,
-    NetworkRpcImpl, PoolRpc, PoolRpcImpl, StatsRpc, StatsRpcImpl,
+    AlertRpc, AlertRpcImpl, ChainRpc, ChainRpcImpl, DebugRpc, DebugRpcImpl, ExperimentRpc,
+    ExperimentRpcImpl, IndexerRpc, IndexerRpcImpl, IntegrationTestRpc, IntegrationTestRpcImpl,
+    MinerRpc, MinerRpcImpl, NetworkRpc, NetworkRpcImpl, PoolRpc, PoolRpcImpl, StatsRpc,
+    StatsRpcImpl,
 };
 use crate::IoHandler;
+use ckb_app_config::IndexerConfig;
+use ckb_app_config::RpcConfig;
 use ckb_chain::chain::ChainController;
-use ckb_indexer::{DefaultIndexerStore, IndexerConfig};
+use ckb_fee_estimator::FeeRate;
+use ckb_indexer::DefaultIndexerStore;
 use ckb_network::NetworkController;
 use ckb_network_alert::{notifier::Notifier as AlertNotifier, verifier::Verifier as AlertVerifier};
 use ckb_shared::shared::Shared;
-use ckb_sync::SyncSharedState;
+use ckb_sync::SyncShared;
 use ckb_sync::Synchronizer;
-use ckb_tx_pool::FeeRate;
 use ckb_util::Mutex;
 use std::sync::Arc;
 
 pub struct ServiceBuilder<'a> {
-    config: &'a Config,
+    config: &'a RpcConfig,
     io_handler: IoHandler,
 }
 
 impl<'a> ServiceBuilder<'a> {
-    pub fn new(config: &'a Config) -> Self {
+    pub fn new(config: &'a RpcConfig) -> Self {
         Self {
             config,
             io_handler: IoHandler::default(),
@@ -41,17 +43,13 @@ impl<'a> ServiceBuilder<'a> {
     pub fn enable_pool(
         mut self,
         shared: Shared,
-        sync_shared_state: Arc<SyncSharedState>,
+        sync_shared: Arc<SyncShared>,
         min_fee_rate: FeeRate,
         reject_ill_transactions: bool,
     ) -> Self {
-        let rpc_method = PoolRpcImpl::new(
-            shared,
-            sync_shared_state,
-            min_fee_rate,
-            reject_ill_transactions,
-        )
-        .to_delegate();
+        let rpc_method =
+            PoolRpcImpl::new(shared, sync_shared, min_fee_rate, reject_ill_transactions)
+                .to_delegate();
         if self.config.pool_enable() {
             self.io_handler.extend_with(rpc_method);
         } else {
@@ -168,6 +166,13 @@ impl<'a> ServiceBuilder<'a> {
             self.io_handler.extend_with(rpc_method)
         } else {
             self.update_disabled_methods("Indexer", rpc_method);
+        }
+        self
+    }
+
+    pub fn enable_debug(mut self) -> Self {
+        if self.config.debug_enable() {
+            self.io_handler.extend_with(DebugRpcImpl {}.to_delegate());
         }
         self
     }

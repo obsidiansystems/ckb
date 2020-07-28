@@ -50,6 +50,7 @@ Subscriptions require a full duplex connection. CKB offers such connections in t
 *   [`Pool`](#pool)
     *   [`send_transaction`](#send_transaction)
     *   [`tx_pool_info`](#tx_pool_info)
+    *   [`clear_tx_pool`](#clear_tx_pool)
 *   [`Stats`](#stats)
     *   [`get_blockchain_info`](#get_blockchain_info)
     *   [`get_peers_state`](#get_peers_state)
@@ -1866,7 +1867,6 @@ http://localhost:8114
                 "score": "0x1"
             }
         ],
-        "is_outbound": null,
         "node_id": "QmTRHCdrRtgUzYLNCin69zEvPvLYdxUZLLfLYyHVY3DZAS",
         "version": "0.0.0"
     }
@@ -1900,29 +1900,28 @@ http://localhost:8114
         {
             "addresses": [
                 {
-                    "address": "/ip4/192.168.0.3/tcp/8115",
-                    "score": "0x1"
+                    "address": "/ip6/::ffff:18.185.102.19/tcp/8115/p2p/QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+                    "score": "0x64"
+                },
+                {
+                    "address": "/ip4/18.185.102.19/tcp/8115/p2p/QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+                    "score": "0x64"
                 }
             ],
             "is_outbound": true,
-            "node_id": "QmaaaLB4uPyDpZwTQGhV63zuYrKm4reyN2tF1j2ain4oE7",
-            "version": "unknown"
+            "node_id": "QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+            "version": "0.31.0 (4231360 2020-04-20)"
         },
         {
             "addresses": [
                 {
-                    "address": "/ip4/192.168.0.4/tcp/8113",
-                    "score": "0xff"
+                    "address": "/ip4/174.80.182.60/tcp/52965/p2p/QmVTMd7SEXfxS5p4EEM5ykTe1DwWWVewEM3NwjLY242vr2",
+                    "score": "0x1"
                 }
             ],
             "is_outbound": false,
-            "node_id": "QmRuGcpVC3vE7aEoB6fhUdq9uzdHbyweCnn1sDBSjfmcbM",
-            "version": "unknown"
-        },
-        {
-            "addresses": [],
-            "node_id": "QmUddxwRqgTmT6tFujXbYPMLGLAE2Tciyv6uHGfdYFyDVa",
-            "version": "unknown"
+            "node_id": "QmVTMd7SEXfxS5p4EEM5ykTe1DwWWVewEM3NwjLY242vr2",
+            "version": "0.29.0 (a6733e6 2020-02-26)"
         }
     ]
 }
@@ -2108,6 +2107,33 @@ http://localhost:8114
         "total_tx_cycles": "0x219",
         "total_tx_size": "0x112"
     }
+}
+```
+
+### `clear_tx_pool`
+
+Remove all transactions from the tx-pool
+
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "clear_tx_pool",
+    "params": []
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": null
 }
 ```
 

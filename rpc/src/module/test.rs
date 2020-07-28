@@ -2,13 +2,13 @@ use crate::error::RPCError;
 use ckb_chain::{chain::ChainController, switch::Switch};
 use ckb_jsonrpc_types::{Block, BlockView, Cycle, Transaction};
 use ckb_logger::error;
-use ckb_network::NetworkController;
+use ckb_network::{NetworkController, SupportProtocols};
 use ckb_shared::shared::Shared;
 use ckb_store::ChainStore;
-use ckb_sync::NetworkProtocol;
 use ckb_types::{core, packed, prelude::*, H256};
 use jsonrpc_core::Result;
 use jsonrpc_derive::rpc;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[rpc(server)]
@@ -22,7 +22,10 @@ pub trait IntegrationTestRpc {
     fn remove_node(&self, peer_id: String) -> Result<()>;
 
     #[rpc(name = "process_block_without_verify")]
-    fn process_block_without_verify(&self, data: Block) -> Result<Option<H256>>;
+    fn process_block_without_verify(&self, data: Block, broadcast: bool) -> Result<Option<H256>>;
+
+    #[rpc(name = "truncate")]
+    fn truncate(&self, target_tip_hash: H256) -> Result<()>;
 
     #[rpc(name = "broadcast_transaction")]
     fn broadcast_transaction(&self, transaction: Transaction, cycles: Cycle) -> Result<H256>;
@@ -52,18 +55,60 @@ impl IntegrationTestRpc for IntegrationTestRpcImpl {
         Ok(())
     }
 
-    fn process_block_without_verify(&self, data: Block) -> Result<Option<H256>> {
+    fn process_block_without_verify(&self, data: Block, broadcast: bool) -> Result<Option<H256>> {
         let block: packed::Block = data.into();
         let block: Arc<core::BlockView> = Arc::new(block.into_view());
         let ret = self
             .chain
             .internal_process_block(Arc::clone(&block), Switch::DISABLE_ALL);
+
+        if broadcast {
+            let content = packed::CompactBlock::build_from_block(&block, &HashSet::new());
+            let message = packed::RelayMessage::new_builder().set(content).build();
+            if let Err(err) = self
+                .network_controller
+                .quick_broadcast(SupportProtocols::Relay.protocol_id(), message.as_bytes())
+            {
+                error!("Broadcast new block failed: {:?}", err);
+            }
+        }
         if ret.is_ok() {
             Ok(Some(block.hash().unpack()))
         } else {
             error!("process_block_without_verify error: {:?}", ret);
             Ok(None)
         }
+    }
+
+    fn truncate(&self, target_tip_hash: H256) -> Result<()> {
+        let header = {
+            let snapshot = self.shared.snapshot();
+            let header = snapshot
+                .get_block_header(&target_tip_hash.pack())
+                .ok_or_else(|| {
+                    RPCError::custom(RPCError::Invalid, "block not found".to_string())
+                })?;
+            if !snapshot.is_main_chain(&header.hash()) {
+                return Err(RPCError::custom(
+                    RPCError::Invalid,
+                    "block not on main chain".to_string(),
+                ));
+            }
+            header
+        };
+
+        // Truncate the chain and database
+        self.chain
+            .truncate(header.hash())
+            .map_err(|err| RPCError::custom(RPCError::Invalid, err.to_string()))?;
+
+        // Clear the tx_pool
+        let tx_pool = self.shared.tx_pool_controller();
+        tx_pool
+            .clear_pool()
+            .map_err(|err| RPCError::custom(RPCError::Invalid, err.to_string()))?;
+
+        Ok(())
     }
 
     fn broadcast_transaction(&self, transaction: Transaction, cycles: Cycle) -> Result<H256> {
@@ -77,10 +122,10 @@ impl IntegrationTestRpc for IntegrationTestRpcImpl {
             .transactions(vec![relay_tx].pack())
             .build();
         let message = packed::RelayMessage::new_builder().set(relay_txs).build();
-        let data = message.as_slice().into();
+
         if let Err(err) = self
             .network_controller
-            .broadcast(NetworkProtocol::RELAY.into(), data)
+            .broadcast(SupportProtocols::Relay.protocol_id(), message.as_bytes())
         {
             error!("Broadcast transaction failed: {:?}", err);
             Err(RPCError::custom(RPCError::Invalid, err.to_string()))

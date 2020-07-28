@@ -1,9 +1,10 @@
 use crate::migration::Migrations;
 use crate::snapshot::RocksDBSnapshot;
 use crate::transaction::RocksDBTransaction;
-use crate::{internal_error, Col, DBConfig, Result};
+use crate::{internal_error, Col, Result};
+use ckb_app_config::DBConfig;
 use ckb_logger::{info, warn};
-use rocksdb::ops::{GetColumnFamilys, GetPinnedCF, GetPropertyCF, IterateCF, OpenCF, SetOptions};
+use rocksdb::ops::{GetColumnFamilys, GetPinnedCF, IterateCF, OpenCF, SetOptions};
 use rocksdb::{
     ffi, ColumnFamily, DBPinnableSlice, IteratorMode, OptimisticTransactionDB,
     OptimisticTransactionOptions, Options, WriteOptions,
@@ -12,6 +13,7 @@ use std::sync::Arc;
 
 pub const VERSION_KEY: &str = "db-version";
 
+#[derive(Clone)]
 pub struct RocksDB {
     pub(crate) inner: Arc<OptimisticTransactionDB>,
 }
@@ -138,18 +140,8 @@ impl RocksDB {
         }
     }
 
-    pub fn property_value(&self, col: Col, name: &str) -> Result<Option<String>> {
-        let cf = cf_handle(&self.inner, col)?;
-        self.inner
-            .property_value_cf(cf, name)
-            .map_err(internal_error)
-    }
-
-    pub fn property_int_value(&self, col: Col, name: &str) -> Result<Option<u64>> {
-        let cf = cf_handle(&self.inner, col)?;
-        self.inner
-            .property_int_value_cf(cf, name)
-            .map_err(internal_error)
+    pub fn inner(&self) -> Arc<OptimisticTransactionDB> {
+        Arc::clone(&self.inner)
     }
 }
 
@@ -164,7 +156,6 @@ mod tests {
     use crate::migration::{DefaultMigration, Migration, Migrations};
     use rocksdb::ops::Get;
     use std::collections::HashMap;
-    use tempfile;
 
     fn setup_db(prefix: &str, columns: u32) -> RocksDB {
         setup_db_with_check(prefix, columns).unwrap()
@@ -246,6 +237,28 @@ mod tests {
         db.traverse("1", callback).unwrap();
         assert!(r.len() == 1);
         assert_eq!(r.get(&vec![1, 1]), Some(&vec![1, 1, 1]));
+    }
+
+    #[test]
+    fn snapshot_isolation() {
+        let db = setup_db("snapshot_isolation", 2);
+        let snapshot = db.get_snapshot();
+        let txn = db.transaction();
+        txn.put("0", &[0, 0], &[5, 4, 3, 2]).unwrap();
+        txn.put("1", &[1, 1], &[1, 2, 3, 4, 5]).unwrap();
+        txn.commit().unwrap();
+
+        assert!(snapshot.get_pinned("0", &[0, 0]).unwrap().is_none());
+        assert!(snapshot.get_pinned("1", &[1, 1]).unwrap().is_none());
+        let snapshot = db.get_snapshot();
+        assert_eq!(
+            snapshot.get_pinned("0", &[0, 0]).unwrap().unwrap().as_ref(),
+            &[5, 4, 3, 2]
+        );
+        assert_eq!(
+            snapshot.get_pinned("1", &[1, 1]).unwrap().unwrap().as_ref(),
+            &[1, 2, 3, 4, 5]
+        );
     }
 
     #[test]

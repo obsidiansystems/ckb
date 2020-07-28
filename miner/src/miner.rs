@@ -1,7 +1,7 @@
 use crate::client::Client;
-use crate::config::WorkerConfig;
 use crate::worker::{start_worker, WorkerController, WorkerMessage};
 use crate::Work;
+use ckb_app_config::MinerWorkerConfig;
 use ckb_logger::{debug, error, info};
 use ckb_pow::PowEngine;
 use ckb_types::{
@@ -27,6 +27,7 @@ pub struct Miner {
     pub pb: ProgressBar,
     pub nonces_found: u128,
     pub stderr_is_tty: bool,
+    pub limit: u128,
 }
 
 impl Miner {
@@ -34,7 +35,8 @@ impl Miner {
         pow: Arc<dyn PowEngine>,
         client: Client,
         work_rx: Receiver<Work>,
-        workers: &[WorkerConfig],
+        workers: &[MinerWorkerConfig],
+        limit: u128,
     ) -> Miner {
         let (nonce_tx, nonce_rx) = unbounded();
         let mp = MultiProgress::new();
@@ -63,6 +65,7 @@ impl Miner {
             nonce_rx,
             pb,
             stderr_is_tty,
+            limit,
         }
     }
 
@@ -84,7 +87,12 @@ impl Miner {
                     },
                 },
                 recv(self.nonce_rx) -> msg => match msg {
-                    Ok((pow_hash, nonce)) => self.submit_nonce(pow_hash, nonce),
+                    Ok((pow_hash, nonce)) => {
+                        self.submit_nonce(pow_hash, nonce);
+                        if self.limit != 0 && self.nonces_found >= self.limit {
+                            break;
+                        }
+                    },
                     _ => {
                         error!("nonce_rx closed");
                         break;

@@ -42,7 +42,8 @@ impl<'a> BlockTransactionsProcess<'a> {
     }
 
     pub fn execute(self) -> Status {
-        let snapshot = self.relayer.shared().snapshot();
+        let shared = self.relayer.shared();
+        let active_chain = shared.active_chain();
         let block_transactions = self.message.to_entity();
         let block_hash = block_transactions.block_hash();
         let received_transactions: Vec<core::TransactionView> = block_transactions
@@ -60,7 +61,15 @@ impl<'a> BlockTransactionsProcess<'a> {
         let missing_uncles: Vec<u32>;
         let mut collision = false;
 
-        if let Entry::Occupied(mut pending) = snapshot
+        {
+            self.relayer
+                .shared
+                .state()
+                .write_inflight_blocks()
+                .remove_compact(self.peer, &block_hash);
+        }
+
+        if let Entry::Occupied(mut pending) = shared
             .state()
             .pending_compact_blocks()
             .entry(block_hash.clone())
@@ -86,7 +95,7 @@ impl<'a> BlockTransactionsProcess<'a> {
                 ));
 
                 let ret = self.relayer.reconstruct_block(
-                    &snapshot,
+                    &active_chain,
                     compact_block,
                     received_transactions,
                     &expected_uncle_indexes,
@@ -111,7 +120,7 @@ impl<'a> BlockTransactionsProcess<'a> {
                     ReconstructionResult::Block(block) => {
                         pending.remove();
                         self.relayer
-                            .accept_block(&snapshot, self.nc.as_ref(), self.peer, block);
+                            .accept_block(self.nc.as_ref(), self.peer, block);
                         return Status::ok();
                     }
                     ReconstructionResult::Missing(transactions, uncles) => {
@@ -134,16 +143,23 @@ impl<'a> BlockTransactionsProcess<'a> {
 
                 assert!(!missing_transactions.is_empty() || !missing_uncles.is_empty());
 
-                let content = packed::GetBlockTransactions::new_builder()
-                    .block_hash(block_hash.clone())
-                    .indexes(missing_transactions.pack())
-                    .uncle_indexes(missing_uncles.pack())
-                    .build();
-                let message = packed::RelayMessage::new_builder().set(content).build();
-                let data = message.as_slice().into();
-                if let Err(err) = self.nc.send_message_to(self.peer, data) {
-                    return StatusCode::Network
-                        .with_context(format!("Send GetBlockTransactions error: {:?}", err,));
+                if shared
+                    .state()
+                    .write_inflight_blocks()
+                    .compact_reconstruct(self.peer, block_hash.clone())
+                {
+                    let content = packed::GetBlockTransactions::new_builder()
+                        .block_hash(block_hash.clone())
+                        .indexes(missing_transactions.pack())
+                        .uncle_indexes(missing_uncles.pack())
+                        .build();
+                    let message = packed::RelayMessage::new_builder().set(content).build();
+
+                    if let Err(err) = self.nc.send_message_to(self.peer, message.as_bytes()) {
+                        return StatusCode::Network
+                            .with_context(format!("Send GetBlockTransactions error: {:?}", err,));
+                    }
+                    crate::relayer::log_sent_metric(message.to_enum().item_name());
                 }
 
                 mem::replace(expected_transaction_indexes, missing_transactions);

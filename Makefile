@@ -1,7 +1,7 @@
 .DEFAULT_GOAL:=help
 SHELL = /bin/sh
 MOLC    := moleculec
-MOLC_VERSION := 0.5.0
+MOLC_VERSION := 0.6.0
 VERBOSE := $(if ${CI},--verbose,)
 CLIPPY_OPTS := -D warnings -D clippy::clone_on_ref_ptr -D clippy::enum_glob_use -D clippy::fallible_impl_from
 CKB_TEST_ARGS := -c 4
@@ -35,19 +35,12 @@ submodule-init:
 .PHONY: integration
 integration: submodule-init setup-ckb-test ## Run integration tests in "test" dir.
 	cargo build --features deadlock_detection
-	cd test && RUST_BACKTRACE=1 RUST_LOG=${INTEGRATION_RUST_LOG} cargo run -- --bin ../target/debug/ckb ${CKB_TEST_ARGS}
-
-.PHONY: integration-windows
-integration-windows: submodule-init
-	cp -f Cargo.lock test/Cargo.lock
-	cargo build --features deadlock_detection
-	mv target test/
-	cd test && cargo run -- --bin target/debug/ckb ${CKB_TEST_ARGS}
+	RUST_BACKTRACE=1 RUST_LOG=${INTEGRATION_RUST_LOG} test/run.sh -- --bin ../target/debug/ckb ${CKB_TEST_ARGS}
 
 .PHONY: integration-release
 integration-release: submodule-init setup-ckb-test
 	cargo build --release --features deadlock_detection
-	cd test && cargo run --release -- --bin ../target/release/ckb ${CKB_TEST_ARGS}
+	RUST_BACKTRACE=1 RUST_LOG=${INTEGRATION_RUST_LOG} test/run.sh --release -- --bin ../target/release/ckb ${CKB_TEST_ARGS}
 
 ##@ Document
 .PHONY: doc
@@ -76,6 +69,14 @@ check: setup-ckb-test ## Runs all of the compiler's checks.
 .PHONY: build
 build: ## Build binary with release profile.
 	cargo build ${VERBOSE} --release
+
+.PHONY: build-for-profiling-without-debug-symbols
+build-for-profiling-without-debug-symbols: ## Build binary with for profiling without debug symbols.
+	JEMALLOC_SYS_WITH_MALLOC_CONF="prof:true" cargo build ${VERBOSE} --release --features "profiling"
+
+.PHONY: build-for-profiling
+build-for-profiling: ## Build binary with for profiling.
+	devtools/release/make-with-debug-symbols build-for-profiling-without-debug-symbols
 
 .PHONY: prod
 prod: ## Build binary for production release.
@@ -118,7 +119,11 @@ clippy: setup-ckb-test ## Run linter to examine Rust source codes.
 .PHONY: security-audit
 security-audit: ## Use cargo-audit to audit Cargo.lock for crates with security vulnerabilities.
 	# https://rustsec.org/advisories/RUSTSEC-2019-0031: spin is no longer actively maintained, it's not a problem
-	cargo audit --ignore RUSTSEC-2019-0031 --deny-warnings
+	# https://rustsec.org/advisories/RUSTSEC-2020-0016: net2 has been deprecated, but still a lot of required crates are dependent on it
+	cargo audit \
+		--ignore RUSTSEC-2019-0031 \
+		--ignore RUSTSEC-2020-0016 \
+		--deny-warnings
 	# expecting to see "Success No vulnerable packages found"
 
 .PHONY: bench-test

@@ -1,19 +1,24 @@
 use ansi_term::{self, Colour};
 use backtrace::Backtrace;
 use chrono::prelude::{DateTime, Local};
+use ckb_util::{Mutex, RwLock};
 use crossbeam_channel::unbounded;
 use env_logger::filter::{Builder, Filter};
 use lazy_static::lazy_static;
 use log::{LevelFilter, Log, Metadata, Record};
-use parking_lot::Mutex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
-use std::{fs, panic, thread};
+use std::{fs, panic, sync, thread};
 
 pub use log::{self as internal, Level, SetLoggerError};
-pub use serde_json::json;
+pub use serde_json::{json, Map, Value};
+
+lazy_static! {
+    static ref CONTROL_HANDLE: sync::Arc<RwLock<Option<crossbeam_channel::Sender<Message>>>> =
+        sync::Arc::new(RwLock::new(None));
+}
 
 #[doc(hidden)]
 #[macro_export]
@@ -26,64 +31,70 @@ macro_rules! env {
 #[macro_export(local_inner_macros)]
 macro_rules! trace {
     ($( $args:tt )*) => {
-        $crate::internal::trace!(target: $crate::env!("CARGO_PKG_NAME"), $( $args )*);
+        $crate::internal::trace!($( $args )*);
     }
 }
 
 #[macro_export(local_inner_macros)]
 macro_rules! debug {
     ($( $args:tt )*) => {
-        $crate::internal::debug!(target: $crate::env!("CARGO_PKG_NAME"), $( $args )*);
+        $crate::internal::debug!($( $args )*);
     }
 }
 
 #[macro_export(local_inner_macros)]
 macro_rules! info {
     ($( $args:tt )*) => {
-        $crate::internal::info!(target: $crate::env!("CARGO_PKG_NAME"), $( $args )*);
+        $crate::internal::info!($( $args )*);
     }
 }
 
 #[macro_export(local_inner_macros)]
 macro_rules! warn {
     ($( $args:tt )*) => {
-        $crate::internal::warn!(target: $crate::env!("CARGO_PKG_NAME"), $( $args )*);
+        $crate::internal::warn!($( $args )*);
     }
 }
 
 #[macro_export(local_inner_macros)]
 macro_rules! error {
     ($( $args:tt )*) => {
-        $crate::internal::error!(target: $crate::env!("CARGO_PKG_NAME"), $( $args )*);
+        $crate::internal::error!($( $args )*);
     }
 }
 
-/// Enable metrics collection feature by setting `ckb-metrics=trace` in logger filter.
+/// Enable metrics collection via configuring log filter. Here are some examples:
+///   * `filter=info,ckb-metrics=trace`: enable all metrics collection
+///   * `filter=info,ckb-metrics=trace,ckb-metrics-sync=off`: enable all metrics collection except
+///     topic "sync"
+///   * `filter=info,ckb-metrics-sync=trace`: only enable metrics collection of topic "sync"
 #[macro_export(local_inner_macros)]
 macro_rules! metric {
-    ($( $args:tt )*) => {
-        let mut obj = $crate::json!($( $args )*);
-        obj.get_mut("tags")
-            .and_then(|tags| {
-                tags.as_object_mut()
-                    .map(|tags|
-                        if !tags.contains_key("target") {
-                            tags.insert(String::from("target"), $crate::env!("CARGO_PKG_NAME").into());
-                        }
-                    )
-            });
-        if obj.get("fields").is_none() {
-            obj.as_object_mut()
-                .map(|obj| obj.insert(String::from("fields"), $crate::json!({})));
+    ( { $( $args:tt )* } ) => {
+        let topic = $crate::__metric_topic!( $($args)* );
+        let filter = ::std::format!("ckb-metrics-{}", topic);
+        if $crate::log_enabled_target!(&filter, $crate::Level::Trace) {
+            let mut metric = $crate::json!( { $( $args )* });
+            $crate::__log_metric(&mut metric, $crate::env!("CARGO_PKG_NAME"));
         }
-        $crate::internal::trace!(target: "ckb-metrics", "{}", obj);
     }
 }
+
+#[doc(hidden)]
+#[macro_export(local_inner_macros)]
+macro_rules! __metric_topic {
+     ("topic" : $topic:expr , $($_args:tt)*) => {
+         $topic
+     };
+     ($_key:literal : $_val:tt , $($args:tt)+) => {
+        $crate::__metric_topic!($($args)+)
+     }
+ }
 
 #[macro_export(local_inner_macros)]
 macro_rules! log_enabled {
     ($level:expr) => {
-        $crate::internal::log_enabled!(target: $crate::env!("CARGO_PKG_NAME"), $level);
+        $crate::internal::log_enabled!($level);
     };
 }
 
@@ -131,6 +142,7 @@ macro_rules! log_enabled_target {
 
 enum Message {
     Record(String),
+    Filter(Filter),
     Terminate,
 }
 
@@ -138,7 +150,7 @@ enum Message {
 pub struct Logger {
     sender: crossbeam_channel::Sender<Message>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
-    filter: Filter,
+    filter: sync::Arc<RwLock<Filter>>,
     emit_sentry_breadcrumbs: bool,
 }
 
@@ -151,17 +163,35 @@ fn enable_ansi_support() {
 #[cfg(not(target_os = "windows"))]
 fn enable_ansi_support() {}
 
+// Parse crate name leniently in logger filter: convert "-" to "_".
+fn convert_compatible_crate_name(spec: &str) -> String {
+    let mut parts = spec.splitn(2, '/');
+    match (parts.next(), parts.next()) {
+        (Some(mods), Some(filter)) => [&mods.replace("-", "_"), filter].join("/"),
+        _ => spec.replace("-", "_"),
+    }
+}
+
+#[test]
+fn test_convert_compatible_crate_name() {
+    let spec = "info,a-b=trace,c-d_e-f=warn,g-h-i=debug,jkl=trace/*[0-9]";
+    let expected = "info,a_b=trace,c_d_e_f=warn,g_h_i=debug,jkl=trace/*[0-9]";
+    let result = convert_compatible_crate_name(&spec);
+    assert_eq!(&result, &expected);
+}
+
 impl Logger {
     fn new(config: Config) -> Logger {
         let mut builder = Builder::new();
 
         if let Ok(ref env_filter) = std::env::var("CKB_LOG") {
-            builder.parse(env_filter);
+            builder.parse(&convert_compatible_crate_name(env_filter));
         } else if let Some(ref config_filter) = config.filter {
-            builder.parse(config_filter);
+            builder.parse(&convert_compatible_crate_name(config_filter));
         }
 
         let (sender, receiver) = unbounded();
+        CONTROL_HANDLE.write().replace(sender.clone());
         let Config {
             color,
             file,
@@ -170,6 +200,8 @@ impl Logger {
             ..
         } = config;
         let file = if log_to_file { file } else { None };
+        let filter = sync::Arc::new(RwLock::new(builder.build()));
+        let filter_for_update = sync::Arc::clone(&filter);
 
         let tb = thread::Builder::new()
             .name("LogWriter".to_owned())
@@ -186,15 +218,26 @@ impl Logger {
                         })
                 });
 
-                while let Ok(Message::Record(record)) = receiver.recv() {
-                    let removed_color = sanitize_color(record.as_ref());
-                    let output = if color { record } else { removed_color.clone() };
-                    if let Some(mut file) = file.as_ref() {
-                        let _ = file.write_all(removed_color.as_bytes());
-                        let _ = file.write_all(b"\n");
-                    };
-                    if log_to_stdout {
-                        println!("{}", output);
+                loop {
+                    match receiver.recv() {
+                        Ok(Message::Record(record)) => {
+                            let removed_color = sanitize_color(record.as_ref());
+                            let output = if color { record } else { removed_color.clone() };
+                            if let Some(mut file) = file.as_ref() {
+                                let _ = file.write_all(removed_color.as_bytes());
+                                let _ = file.write_all(b"\n");
+                            };
+                            if log_to_stdout {
+                                println!("{}", output);
+                            }
+                        }
+                        Ok(Message::Filter(filter)) => {
+                            *filter_for_update.write() = filter;
+                            log::set_max_level(filter_for_update.read().filter());
+                        }
+                        Ok(Message::Terminate) | Err(_) => {
+                            break;
+                        }
                     }
                 }
             })
@@ -203,13 +246,13 @@ impl Logger {
         Logger {
             sender,
             handle: Mutex::new(Some(tb)),
-            filter: builder.build(),
+            filter,
             emit_sentry_breadcrumbs: config.emit_sentry_breadcrumbs.unwrap_or_default(),
         }
     }
 
     pub fn filter(&self) -> LevelFilter {
-        self.filter.filter()
+        self.filter.read().filter()
     }
 }
 
@@ -238,12 +281,12 @@ impl Default for Config {
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        self.filter.enabled(metadata)
+        self.filter.read().enabled(metadata)
     }
 
     fn log(&self, record: &Record) {
         // Check if the record is matched by the filter
-        if self.filter.matches(record) {
+        if self.filter.read().matches(record) {
             if self.emit_sentry_breadcrumbs {
                 use sentry::{add_breadcrumb, integrations::log::breadcrumb_from_record};
                 add_breadcrumb(|| breadcrumb_from_record(record));
@@ -297,8 +340,15 @@ pub fn init(config: Config) -> Result<LoggerInitGuard, SetLoggerError> {
     setup_panic_logger();
 
     let logger = Logger::new(config);
-    log::set_max_level(logger.filter());
-    log::set_boxed_logger(Box::new(logger)).map(|_| LoggerInitGuard)
+    let filter = logger.filter();
+    log::set_boxed_logger(Box::new(logger)).map(|_| {
+        log::set_max_level(filter);
+        LoggerInitGuard
+    })
+}
+
+pub fn silent() {
+    log::set_max_level(LevelFilter::Off);
 }
 
 pub fn flush() {
@@ -331,4 +381,36 @@ fn setup_panic_logger() {
         );
     };
     panic::set_hook(Box::new(panic_logger));
+}
+
+// Used inside macro `metric!`
+pub fn __log_metric(metric: &mut Value, default_target: &str) {
+    if metric.get("fields").is_none() {
+        metric
+            .as_object_mut()
+            .map(|obj| obj.insert("fields".to_string(), Map::new().into()));
+    }
+    if metric.get("tags").is_none() {
+        metric
+            .as_object_mut()
+            .map(|obj| obj.insert("tags".to_string(), Map::new().into()));
+    }
+    metric.get_mut("tags").and_then(|tags| {
+        tags.as_object_mut().map(|tags| {
+            if !tags.contains_key("target") {
+                tags.insert("target".to_string(), default_target.into());
+            }
+        })
+    });
+    trace_target!("ckb-metrics", "{}", metric);
+}
+
+pub fn configure_logger_filter(filter_str: &str) {
+    let filter = Builder::new()
+        .parse(&convert_compatible_crate_name(filter_str))
+        .build();
+    let _ = CONTROL_HANDLE
+        .read()
+        .as_ref()
+        .map(|sender| sender.send(Message::Filter(filter)));
 }

@@ -3,7 +3,6 @@ use ckb_jsonrpc_types::BlockView as JsonBlock;
 use ckb_shared::shared::Shared;
 #[cfg(feature = "progress_bar")]
 use indicatif::{ProgressBar, ProgressStyle};
-use serde_json;
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -24,7 +23,7 @@ impl Export {
 
     /// Returning ChainIterator dealing with blocks iterate.
     pub fn iter(&self) -> ChainIterator {
-        ChainIterator::new(self.shared.clone())
+        ChainIterator::new(&self.shared)
     }
 
     /// export file name
@@ -65,7 +64,7 @@ impl Export {
         let mut writer = io::BufWriter::new(f);
 
         let blocks_iter = self.iter();
-        let progress_bar = ProgressBar::new(blocks_iter.len());
+        let progress_bar = ProgressBar::new(blocks_iter.size());
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:50.cyan/blue} {pos:>6}/{len:6} {msg}")

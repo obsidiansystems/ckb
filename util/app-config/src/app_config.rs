@@ -11,18 +11,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use ckb_chain_spec::ChainSpec;
-use ckb_db::DBConfig;
-use ckb_indexer::IndexerConfig;
 use ckb_logger::Config as LogConfig;
-use ckb_miner::MinerConfig;
-use ckb_network::NetworkConfig;
-use ckb_network_alert::config::SignatureConfig as AlertSignatureConfig;
-use ckb_notify::Config as NotifyConfig;
 use ckb_resource::Resource;
-use ckb_rpc::Config as RpcConfig;
-use ckb_store::StoreConfig;
-use ckb_tx_pool::{BlockAssemblerConfig, TxPoolConfig};
 
+use super::configs::*;
 use super::sentry_config::SentryConfig;
 use super::{cli, ExitCode};
 
@@ -37,6 +29,8 @@ pub struct CKBAppConfig {
     pub data_dir: PathBuf,
     pub logger: LogConfig,
     pub sentry: SentryConfig,
+    #[serde(default)]
+    pub memory_tracker: MemoryTrackerConfig,
     pub chain: ChainConfig,
 
     pub block_assembler: Option<BlockAssemblerConfig>,
@@ -49,7 +43,7 @@ pub struct CKBAppConfig {
     pub tx_pool: TxPoolConfig,
     #[serde(default)]
     pub store: StoreConfig,
-    pub alert_signature: Option<AlertSignatureConfig>,
+    pub alert_signature: Option<NetworkAlertConfig>,
     #[serde(default)]
     pub notify: NotifyConfig,
 }
@@ -61,6 +55,8 @@ pub struct MinerAppConfig {
     pub chain: ChainConfig,
     pub logger: LogConfig,
     pub sentry: SentryConfig,
+    #[serde(default)]
+    pub memory_tracker: MemoryTrackerConfig,
 
     pub miner: MinerConfig,
 }
@@ -105,6 +101,13 @@ impl AppConfig {
         match self {
             AppConfig::CKB(config) => &config.sentry,
             AppConfig::Miner(config) => &config.sentry,
+        }
+    }
+
+    pub fn memory_tracker(&self) -> &MemoryTrackerConfig {
+        match self {
+            AppConfig::CKB(config) => &config.memory_tracker,
+            AppConfig::Miner(config) => &config.memory_tracker,
         }
     }
 
@@ -253,15 +256,17 @@ mod tests {
     #[test]
     fn test_export_dev_config_files() {
         let dir = mkdir();
-        let context = TemplateContext {
-            spec: "dev",
-            rpc_port: "7000",
-            p2p_port: "8000",
-            log_to_file: true,
-            log_to_stdout: true,
-            block_assembler: "",
-            spec_source: "bundled",
-        };
+        let context = TemplateContext::new(
+            "dev",
+            vec![
+                ("rpc_port", "7000"),
+                ("p2p_port", "8000"),
+                ("log_to_file", "true"),
+                ("log_to_stdout", "true"),
+                ("block_assembler", ""),
+                ("spec_source", "bundled"),
+            ],
+        );
         {
             Resource::bundled_ckb_config()
                 .export(&context, dir.path())
@@ -300,15 +305,17 @@ mod tests {
     #[test]
     fn test_log_to_stdout_only() {
         let dir = mkdir();
-        let context = TemplateContext {
-            spec: "dev",
-            rpc_port: "7000",
-            p2p_port: "8000",
-            log_to_file: false,
-            log_to_stdout: true,
-            block_assembler: "",
-            spec_source: "bundled",
-        };
+        let context = TemplateContext::new(
+            "dev",
+            vec![
+                ("rpc_port", "7000"),
+                ("p2p_port", "8000"),
+                ("log_to_file", "false"),
+                ("log_to_stdout", "true"),
+                ("block_assembler", ""),
+                ("spec_source", "bundled"),
+            ],
+        );
         {
             Resource::bundled_ckb_config()
                 .export(&context, dir.path())
@@ -336,15 +343,17 @@ mod tests {
     #[test]
     fn test_export_testnet_config_files() {
         let dir = mkdir();
-        let context = TemplateContext {
-            spec: "testnet",
-            rpc_port: "7000",
-            p2p_port: "8000",
-            log_to_file: true,
-            log_to_stdout: true,
-            block_assembler: "",
-            spec_source: "bundled",
-        };
+        let context = TemplateContext::new(
+            "testnet",
+            vec![
+                ("rpc_port", "7000"),
+                ("p2p_port", "8000"),
+                ("log_to_file", "true"),
+                ("log_to_stdout", "true"),
+                ("block_assembler", ""),
+                ("spec_source", "bundled"),
+            ],
+        );
         {
             Resource::bundled_ckb_config()
                 .export(&context, dir.path())
@@ -383,15 +392,17 @@ mod tests {
     #[test]
     fn test_export_integration_config_files() {
         let dir = mkdir();
-        let context = TemplateContext {
-            spec: "integration",
-            rpc_port: "7000",
-            p2p_port: "8000",
-            log_to_file: true,
-            log_to_stdout: true,
-            block_assembler: "",
-            spec_source: "bundled",
-        };
+        let context = TemplateContext::new(
+            "integration",
+            vec![
+                ("rpc_port", "7000"),
+                ("p2p_port", "8000"),
+                ("log_to_file", "true"),
+                ("log_to_stdout", "true"),
+                ("block_assembler", ""),
+                ("spec_source", "bundled"),
+            ],
+        );
         {
             Resource::bundled_ckb_config()
                 .export(&context, dir.path())
@@ -428,15 +439,17 @@ mod tests {
     #[test]
     fn test_export_dev_config_files_assembly() {
         let dir = mkdir();
-        let context = TemplateContext {
-            spec: "dev",
-            rpc_port: "7000",
-            p2p_port: "8000",
-            log_to_file: true,
-            log_to_stdout: true,
-            block_assembler: "",
-            spec_source: "bundled",
-        };
+        let context = TemplateContext::new(
+            "dev",
+            vec![
+                ("rpc_port", "7000"),
+                ("p2p_port", "8000"),
+                ("log_to_file", "true"),
+                ("log_to_stdout", "true"),
+                ("block_assembler", ""),
+                ("spec_source", "bundled"),
+            ],
+        );
         {
             Resource::bundled_ckb_config()
                 .export(&context, dir.path())

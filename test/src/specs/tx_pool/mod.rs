@@ -3,7 +3,6 @@ mod collision;
 mod depend_tx_in_same_block;
 mod descendant;
 mod different_txs_with_same_input;
-mod fee_estimate;
 mod limit;
 mod pool_reconcile;
 mod pool_resurrect;
@@ -25,7 +24,6 @@ pub use collision::*;
 pub use depend_tx_in_same_block::*;
 pub use descendant::*;
 pub use different_txs_with_same_input::*;
-pub use fee_estimate::*;
 pub use limit::*;
 pub use pool_reconcile::*;
 pub use pool_resurrect::*;
@@ -41,10 +39,10 @@ pub use send_secp_tx::*;
 pub use txs_relay_order::*;
 pub use valid_since::*;
 
+use ckb_app_config::BlockAssemblerConfig;
 use ckb_chain_spec::{build_genesis_type_id_script, OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL};
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_resource::CODE_HASH_SECP256K1_BLAKE160_SIGHASH_ALL;
-use ckb_tx_pool::BlockAssemblerConfig;
 use ckb_types::{bytes::Bytes, core::ScriptHashType, prelude::*, H256};
 
 fn type_lock_script_code_hash() -> H256 {

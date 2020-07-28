@@ -228,6 +228,16 @@ impl Node {
         if !result {
             panic!("Disconnect timeout, node {}", node_id);
         }
+
+        let rpc_client = node.rpc_client();
+        let node_id = self.node_id();
+        let result = wait_until(5, || {
+            let peers = rpc_client.get_peers();
+            peers.iter().all(|peer| peer.node_id != node_id)
+        });
+        if !result {
+            panic!("Disconnect timeout, node {}", node_id);
+        }
     }
 
     pub fn waiting_for_sync(&self, node: &Node, target: BlockNumber) {
@@ -259,9 +269,9 @@ impl Node {
             .expect("submit_block failed")
     }
 
-    pub fn process_block_without_verify(&self, block: &BlockView) -> Byte32 {
+    pub fn process_block_without_verify(&self, block: &BlockView, broadcast: bool) -> Byte32 {
         self.rpc_client()
-            .process_block_without_verify(block.data().into())
+            .process_block_without_verify(block.data().into(), broadcast)
             .expect("process_block_without_verify result none")
     }
 
@@ -283,7 +293,17 @@ impl Node {
         // is less than the current time, and then generate
         // the new block in main fork which timestamp is greater than
         // or equal to the current time.
-        let timestamp = block.timestamp() - 1;
+        let timestamp = block.timestamp();
+        loop {
+            let timestamp_next: u64 = self
+                .rpc_client()
+                .get_block_template(None, None, None)
+                .current_time
+                .into();
+            if timestamp_next > timestamp {
+                break;
+            }
+        }
         block
             .as_advanced_builder()
             .timestamp(timestamp.pack())

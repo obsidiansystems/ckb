@@ -1,7 +1,6 @@
-use super::app_config::CKBAppConfig;
+use crate::{CKBAppConfig, MemoryTrackerConfig, MinerConfig};
 use ckb_chain_spec::consensus::Consensus;
 use ckb_jsonrpc_types::ScriptHashType;
-use ckb_miner::MinerConfig;
 use ckb_pow::PowEngine;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,16 +23,21 @@ pub struct RunArgs {
     pub block_assembler_advanced: bool,
 }
 
-pub struct ProfArgs {
+pub type ProfileArgs = Option<(Option<u64>, Option<u64>)>;
+pub struct ReplayArgs {
     pub config: Box<CKBAppConfig>,
     pub consensus: Consensus,
-    pub from: u64,
-    pub to: u64,
+    pub tmp_target: PathBuf,
+    pub profile: ProfileArgs,
+    pub sanity_check: bool,
+    pub full_verfication: bool,
 }
 
 pub struct MinerArgs {
     pub config: MinerConfig,
     pub pow_engine: Arc<dyn PowEngine>,
+    pub memory_tracker: MemoryTrackerConfig,
+    pub limit: u128,
 }
 
 pub struct StatsArgs {
@@ -76,4 +80,8 @@ pub struct ResetDataArgs {
     pub network_peer_store_path: PathBuf,
     pub network_secret_key_path: PathBuf,
     pub logs_dir: Option<PathBuf>,
+}
+
+pub struct PeerIDArgs {
+    pub peer_id: p2p::secio::PeerId,
 }

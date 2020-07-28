@@ -1,6 +1,6 @@
 [package]
 name = "ckb-bin"
-version = "0.30.1-pre"
+version = "0.34.1"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -29,9 +29,11 @@ ctrlc = { version = "3.1", features = ["termination"] }
 ckb-sync = { path = "../sync"}
 ckb-instrument = { path = "../util/instrument", features = ["progress_bar"] }
 ckb-build-info = { path = "../util/build-info" }
+ckb-memory-tracker = { path = "../util/memory-tracker" }
 ckb-verification = { path = "../verification" }
 base64 = "0.10.1"
-
+tempfile = "3.0"
 
 [features]
 deadlock_detection = ["ckb-util/deadlock_detection"]
+profiling = ["ckb-memory-tracker/profiling"]

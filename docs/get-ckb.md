@@ -50,6 +50,8 @@ under section *Other Tools and Frameworks*
 
 ## Build from Source
 
+The details about how to build CKB on Windows can be found [HERE](ckb-on-windows.md).
+
 ### Install Build Dependencies
 
 CKB requires Rust to build. We recommend installing [rustup](https://www.rustup.rs/) to manage Rust versions.
@@ -92,24 +94,13 @@ scl enable llvm-toolset-7 bash
 
 Remember to run following commands in this console.
 
-#### Windows
-
-Install Visual Studio with Desktop C++ workload, and install following
-packages via [Chocolatey](https://chocolatey.org)
-
-```
-choco install -y llvm msys2
-```
-
 ### Add Environment Variables
 
-If your OS contains pre-compiled `rocksdb` or `snappy` libraries,
-you may setup `ROCKSDB_LIB_DIR` and/or `SNAPPY_LIB_DIR` environment variable
-to point to a directory with these libraries.
-This will significantly reduce compile time.
+If your OS contains pre-compiled `snappy` library, you may setup
+`SNAPPY_LIB_DIR` environment variable to point to a directory with this
+library. This will reduce compile time.
 
 ```shell
-export ROCKSDB_LIB_DIR=/usr/local/lib
 export SNAPPY_LIB_DIR=/usr/local/lib
 ```
 
@@ -150,6 +141,3 @@ export PATH="$(pwd)/target/release:$PATH"
 # or
 # ln -snf "$(pwd)/target/release/ckb" /usr/local/bin/ckb
 ```
-
-In Windows, use `cargo build --release` instead and the executable is
-`target/release/ckb.exe`.

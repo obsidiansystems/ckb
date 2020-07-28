@@ -9,7 +9,7 @@ use ckb_types::{packed, prelude::*};
 pub struct BlockProcess<'a> {
     message: packed::SendBlockReader<'a>,
     synchronizer: &'a Synchronizer,
-    peer: PeerIndex,
+    _peer: PeerIndex,
 }
 
 impl<'a> BlockProcess<'a> {
@@ -21,7 +21,7 @@ impl<'a> BlockProcess<'a> {
         BlockProcess {
             message,
             synchronizer,
-            peer,
+            _peer: peer,
         }
     }
 
@@ -32,14 +32,11 @@ impl<'a> BlockProcess<'a> {
             block.number(),
             block.hash(),
         );
-        let snapshot = self.synchronizer.shared().snapshot();
-        let state = self.synchronizer.shared().state();
+        let shared = self.synchronizer.shared();
+        let state = shared.state();
 
         if state.new_block_received(&block) {
-            if let Err(err) =
-                self.synchronizer
-                    .process_new_block(&snapshot, self.peer, block.clone())
-            {
+            if let Err(err) = self.synchronizer.process_new_block(block.clone()) {
                 state.insert_block_status(block.hash(), BlockStatus::BLOCK_INVALID);
                 return StatusCode::BlockIsInvalid.with_context(format!(
                     "{}, error: {}",
@@ -47,10 +44,6 @@ impl<'a> BlockProcess<'a> {
                     err,
                 ));
             }
-        } else if snapshot.contains_block_status(&block.hash(), BlockStatus::BLOCK_STORED) {
-            state
-                .peers()
-                .set_last_common_header(self.peer, block.header());
         }
 
         Status::ok()

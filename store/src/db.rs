@@ -1,9 +1,8 @@
 use crate::cache::StoreCache;
-use crate::config::StoreConfig;
 use crate::store::ChainStore;
 use crate::transaction::StoreTransaction;
 use crate::StoreSnapshot;
-use crate::COLUMN_CELL_SET;
+use ckb_app_config::StoreConfig;
 use ckb_chain_spec::consensus::Consensus;
 use ckb_db::{
     iter::{DBIter, DBIterator, IteratorMode},
@@ -12,11 +11,11 @@ use ckb_db::{
 use ckb_error::Error;
 use ckb_types::{
     core::{BlockExt, TransactionMeta},
-    packed,
     prelude::*,
 };
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct ChainDB {
     db: RocksDB,
     cache: Arc<StoreCache>,
@@ -49,25 +48,8 @@ impl ChainDB {
         }
     }
 
-    pub fn property_value(&self, col: Col, name: &str) -> Result<Option<String>, Error> {
-        self.db.property_value(col, name)
-    }
-
-    pub fn property_int_value(&self, col: Col, name: &str) -> Result<Option<u64>, Error> {
-        self.db.property_int_value(col, name)
-    }
-
-    pub fn traverse_cell_set<F>(&self, mut callback: F) -> Result<(), Error>
-    where
-        F: FnMut(packed::Byte32, packed::TransactionMeta) -> Result<(), Error>,
-    {
-        self.db
-            .traverse(COLUMN_CELL_SET, |hash_slice, tx_meta_bytes| {
-                let tx_hash = packed::Byte32Reader::from_slice_should_be_ok(hash_slice).to_entity();
-                let tx_meta = packed::TransactionMetaReader::from_slice_should_be_ok(tx_meta_bytes)
-                    .to_entity();
-                callback(tx_hash, tx_meta)
-            })
+    pub fn db(&self) -> &RocksDB {
+        &self.db
     }
 
     pub fn begin_transaction(&self) -> StoreTransaction {
@@ -143,6 +125,7 @@ mod tests {
     use super::*;
     use ckb_chain_spec::consensus::ConsensusBuilder;
     use ckb_db::RocksDB;
+    use ckb_types::packed;
 
     fn setup_db(columns: u32) -> RocksDB {
         RocksDB::open_tmp(columns)
