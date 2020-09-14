@@ -96,6 +96,9 @@ pub enum StatusCode {
     /// Cannot locate the common blocks based on the GetHeaders
     GetHeadersMissCommonAncestors = 414,
 
+    /// Generic rate limit error
+    TooManyRequests = 429,
+
     ///////////////////////////////////
     //      Warning 5xx              //
     ///////////////////////////////////
@@ -155,6 +158,10 @@ impl Status {
 
     pub fn code(&self) -> StatusCode {
         self.code
+    }
+
+    pub(crate) fn tag(&self) -> String {
+        format!("{:?}", self.code)
     }
 }
 

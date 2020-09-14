@@ -1,47 +1,33 @@
-use crate::module::{
-    ChainRpc, ChainRpcImpl, ExperimentRpc, ExperimentRpcImpl, IndexerRpc, IndexerRpcImpl, MinerRpc,
-    MinerRpcImpl, NetworkRpc, NetworkRpcImpl, PoolRpc, PoolRpcImpl, StatsRpc, StatsRpcImpl,
-};
-use crate::RpcServer;
+use crate::{RpcServer, ServiceBuilder};
+use ckb_app_config::{IndexerConfig, NetworkAlertConfig, NetworkConfig, RpcConfig, RpcModule};
 use ckb_chain::chain::{ChainController, ChainService};
 use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder};
 use ckb_dao::DaoCalculator;
 use ckb_dao_utils::genesis_dao_data;
-use ckb_indexer::{DefaultIndexerStore, IndexerConfig, IndexerStore};
+use ckb_fee_estimator::FeeRate;
+use ckb_indexer::{DefaultIndexerStore, IndexerStore};
 use ckb_jsonrpc_types::{Block as JsonBlock, Uint64};
-use ckb_network::{NetworkConfig, NetworkService, NetworkState};
-use ckb_network_alert::{
-    alert_relayer::AlertRelayer, config::SignatureConfig as AlertSignatureConfig,
-};
+use ckb_network::{DefaultExitHandler, NetworkService, NetworkState};
+use ckb_network_alert::alert_relayer::AlertRelayer;
 use ckb_notify::NotifyService;
 use ckb_shared::{
     shared::{Shared, SharedBuilder},
     Snapshot,
 };
 use ckb_store::ChainStore;
-use ckb_sync::{SyncSharedState, Synchronizer};
+use ckb_sync::{SyncShared, Synchronizer};
 use ckb_test_chain_utils::{always_success_cell, always_success_cellbase};
-use ckb_tx_pool::FeeRate;
 use ckb_types::{
     core::{
         capacity_bytes, cell::resolve_transaction, BlockBuilder, BlockView, Capacity,
         EpochNumberWithFraction, HeaderView, TransactionBuilder, TransactionView,
     },
     h256,
-    packed::{
-        AlertBuilder, Byte32, CellDep, CellInput, CellOutputBuilder, OutPoint, RawAlertBuilder,
-    },
+    packed::{AlertBuilder, CellDep, CellInput, CellOutputBuilder, OutPoint, RawAlertBuilder},
     prelude::*,
     H256,
 };
-use ckb_util::{Condvar, Mutex};
-use jsonrpc_core::IoHandler;
-use jsonrpc_http_server::ServerBuilder;
-use jsonrpc_server_utils::cors::AccessControlAllowOrigin;
-use jsonrpc_server_utils::hosts::DomainsValidation;
 use pretty_assertions::assert_eq as pretty_assert_eq;
-use rand::{thread_rng, Rng};
-use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_reader, json, to_string, Map, Value};
 use std::cell::RefCell;
@@ -150,42 +136,17 @@ fn setup_node(height: u64) -> (Shared, ChainController, RpcServer) {
         .build()
         .unwrap();
     let chain_controller = ChainService::new(shared.clone(), table).start::<&str>(None);
-    let tx_pool_controller = shared.tx_pool_controller();
 
     // Build chain, insert [1, height) blocks
     let mut parent = always_success_consensus().genesis_block;
-
-    // prepare fee estimator samples
-    let sample_txs: Vec<Byte32> = (0..30)
-        .map(|_| {
-            let mut buf = [0u8; 32];
-            let mut rng = thread_rng();
-            rng.fill(&mut buf);
-            buf.pack()
-        })
-        .collect();
-    let fee_rate = FeeRate::from_u64(2_000);
-    let send_height = height.saturating_sub(9);
 
     for _ in 0..height {
         let block = next_block(&shared, &parent.header());
         chain_controller
             .process_block(Arc::new(block.clone()))
             .expect("processing new block should be ok");
-        // Fake fee estimator samples
-        if block.header().number() == send_height {
-            for tx_hash in sample_txs.clone() {
-                tx_pool_controller
-                    .estimator_track_tx(tx_hash, fee_rate, send_height)
-                    .expect("prepare estimator samples");
-            }
-        }
         parent = block;
     }
-    // mark txs as confirmed
-    tx_pool_controller
-        .estimator_process_block(height + 1, sample_txs.into_iter())
-        .expect("process estimator samples");
 
     // Start network services
     let dir = tempfile::tempdir()
@@ -206,14 +167,14 @@ fn setup_node(height: u64) -> (Shared, ChainController, RpcServer) {
             Vec::new(),
             shared.consensus().identify_name(),
             "0.1.0".to_string(),
-            Arc::new((Mutex::new(()), Condvar::new())),
+            DefaultExitHandler::default(),
         )
-        .start::<&str>(Default::default(), None)
+        .start(Some("rpc-test-network"))
         .expect("Start network service failed")
     };
-    let sync_shared_state = Arc::new(SyncSharedState::new(shared.clone()));
-    let synchronizer = Synchronizer::new(chain_controller.clone(), Arc::clone(&sync_shared_state));
-    let indexer_store = {
+    let sync_shared = Arc::new(SyncShared::new(shared.clone(), Default::default()));
+    let synchronizer = Synchronizer::new(chain_controller.clone(), Arc::clone(&sync_shared));
+    let indexer_config = {
         let mut indexer_config = IndexerConfig::default();
         indexer_config.db.path = dir.join("indexer");
         let indexer_store = DefaultIndexerStore::new(&indexer_config, shared.clone());
@@ -221,7 +182,7 @@ fn setup_node(height: u64) -> (Shared, ChainController, RpcServer) {
         indexer_store.insert_lock_hash(&always_success_script.calc_script_hash(), Some(0));
         // use hardcoded TXN_ATTACH_BLOCK_NUMS (100) value here to setup testing data.
         (0..=height / 100).for_each(|_| indexer_store.sync_index_states());
-        indexer_store
+        indexer_config
     };
 
     let notify_controller = NotifyService::new(Default::default()).start(Some("test"));
@@ -229,7 +190,7 @@ fn setup_node(height: u64) -> (Shared, ChainController, RpcServer) {
         let alert_relayer = AlertRelayer::new(
             "0.1.0".to_string(),
             notify_controller,
-            AlertSignatureConfig::default(),
+            NetworkAlertConfig::default(),
         );
         let alert_notifier = alert_relayer.notifier();
         let alert = AlertBuilder::default()
@@ -249,64 +210,54 @@ fn setup_node(height: u64) -> (Shared, ChainController, RpcServer) {
     };
 
     // Start rpc services
-    let mut io = IoHandler::new();
-    io.extend_with(
-        ChainRpcImpl {
-            shared: shared.clone(),
-        }
-        .to_delegate(),
-    );
-    io.extend_with(
-        PoolRpcImpl::new(shared.clone(), sync_shared_state, FeeRate::zero(), true).to_delegate(),
-    );
-    io.extend_with(
-        NetworkRpcImpl {
-            network_controller: network_controller.clone(),
-        }
-        .to_delegate(),
-    );
-    io.extend_with(
-        StatsRpcImpl {
-            shared: shared.clone(),
-            synchronizer,
-            alert_notifier,
-        }
-        .to_delegate(),
-    );
-    io.extend_with(
-        IndexerRpcImpl {
-            store: indexer_store,
-        }
-        .to_delegate(),
-    );
-    io.extend_with(
-        ExperimentRpcImpl {
-            shared: shared.clone(),
-        }
-        .to_delegate(),
-    );
-    io.extend_with(
-        MinerRpcImpl {
-            shared: shared.clone(),
-            chain: chain_controller.clone(),
-            network_controller,
-        }
-        .to_delegate(),
-    );
-    let http = ServerBuilder::new(io)
-        .cors(DomainsValidation::AllowOnly(vec![
-            AccessControlAllowOrigin::Null,
-            AccessControlAllowOrigin::Any,
-        ]))
-        .threads(1)
-        .max_request_body_size(20_000_000)
-        .start_http(&"127.0.0.1:0".parse().unwrap())
-        .expect("JsonRpc initialize");
-    let rpc_server = RpcServer {
-        http,
-        tcp: None,
-        ws: None,
+    let rpc_config = RpcConfig {
+        listen_address: "127.0.0.01:0".to_owned(),
+        tcp_listen_address: None,
+        ws_listen_address: None,
+        max_request_body_size: 20_000_000,
+        threads: None,
+        // enable all rpc modules in unit test
+        modules: vec![
+            RpcModule::Net,
+            RpcModule::Chain,
+            RpcModule::Miner,
+            RpcModule::Pool,
+            RpcModule::Experiment,
+            RpcModule::Stats,
+            RpcModule::Indexer,
+            RpcModule::IntegrationTest,
+            RpcModule::Alert,
+            RpcModule::Subscription,
+            RpcModule::Debug,
+        ],
+        reject_ill_transactions: true,
+        // enable deprecated rpc in unit test
+        enable_deprecated_rpc: true,
     };
+
+    let builder = ServiceBuilder::new(&rpc_config)
+        .enable_chain(shared.clone())
+        .enable_pool(
+            shared.clone(),
+            Arc::clone(&sync_shared),
+            FeeRate::zero(),
+            true,
+        )
+        .enable_miner(
+            shared.clone(),
+            network_controller.clone(),
+            chain_controller.clone(),
+            true,
+        )
+        .enable_net(network_controller.clone(), sync_shared)
+        .enable_stats(shared.clone(), synchronizer, Arc::clone(&alert_notifier))
+        .enable_experiment(shared.clone())
+        .enable_integration_test(shared.clone(), network_controller, chain_controller.clone())
+        .enable_indexer(&indexer_config, shared.clone())
+        .enable_debug();
+    let io_handler = builder.build();
+
+    let rpc_server = RpcServer::new(rpc_config, io_handler, shared.notify_controller());
 
     (shared, chain_controller, rpc_server)
 }
@@ -352,12 +303,17 @@ fn request_of(method: &str, params: Value) -> Value {
 
 // Get the actual result of the given case
 fn result_of(client: &reqwest::Client, uri: &str, method: &str, params: Value) -> Value {
-    let request = request_of(method, params);
+    let request = request_of(method, params.clone());
     match client
         .post(uri)
         .json(&request)
         .send()
-        .expect("send request")
+        .unwrap_or_else(|_| {
+            panic!(
+                "send request error, method: {:?}, params: {:?}",
+                method, params
+            )
+        })
         .json::<JsonResponse>()
     {
         Err(err) => panic!("{} response error: {:?}", method, err),
@@ -408,7 +364,8 @@ fn params_of(shared: &Shared, method: &str) -> Value {
         | "get_current_epoch"
         | "get_blockchain_info"
         | "tx_pool_info"
-        | "get_lock_hash_index_states" => vec![],
+        | "get_lock_hash_index_states"
+        | "clear_tx_pool" => vec![],
         "get_epoch_by_number" => vec![json!("0x0")],
         "get_block_hash" | "get_block_by_number" | "get_header_by_number" => {
             vec![json!(tip_number)]
@@ -428,6 +385,11 @@ fn params_of(shared: &Shared, method: &str) -> Value {
             json!(true),
             json!("set_ban example"),
         ],
+        "add_node" => vec![
+            json!("QmUsZHPbjjzU627UZFt4k8j6ycEcNvXRnVGxCPKqwbAfQS"),
+            json!("/ip4/192.168.2.100/tcp/8114"),
+        ],
+        "remove_node" => vec![json!("QmUsZHPbjjzU627UZFt4k8j6ycEcNvXRnVGxCPKqwbAfQS")],
         "send_transaction" => vec![transaction, json!("passthrough")],
         "dry_run_transaction" | "_compute_transaction_hash" => vec![transaction],
         "get_transaction" => vec![transaction_hash],
@@ -500,8 +462,8 @@ fn test_rpc() {
     let client = reqwest::Client::new();
     let uri = format!(
         "http://{}:{}/",
-        server.http.address().ip(),
-        server.http.address().port()
+        server.http_address().ip(),
+        server.http_address().port()
     );
 
     // Assert the params of jsonrpc requests
@@ -554,6 +516,4 @@ fn test_rpc() {
             pretty_assert_eq!(actual, expected, "Assert results of jsonrpc",);
         }
     }
-
-    server.close();
 }

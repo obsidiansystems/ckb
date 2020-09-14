@@ -1,7 +1,7 @@
 use crate::component::container::{AncestorsScoreSortKey, SortedTxMap};
 use crate::component::entry::TxEntry;
-use crate::error::SubmitTxError;
-use crate::FeeRate;
+use crate::error::Reject;
+use ckb_fee_estimator::FeeRate;
 use ckb_types::{
     core::{
         cell::{CellMetaBuilder, CellProvider, CellStatus},
@@ -28,7 +28,7 @@ impl PendingQueue {
         self.inner.size()
     }
 
-    pub(crate) fn add_entry(&mut self, entry: TxEntry) -> Result<Option<TxEntry>, SubmitTxError> {
+    pub(crate) fn add_entry(&mut self, entry: TxEntry) -> Result<Option<TxEntry>, Reject> {
         self.inner.add_entry(entry)
     }
 
@@ -104,15 +104,19 @@ impl PendingQueue {
 }
 
 impl CellProvider for PendingQueue {
-    fn cell(&self, out_point: &OutPoint, _with_data: bool) -> CellStatus {
+    fn cell(&self, out_point: &OutPoint, with_data: bool) -> CellStatus {
         let tx_hash = out_point.tx_hash();
         if let Some(x) = self.inner.get(&ProposalShortId::from_tx_hash(&tx_hash)) {
             match x.transaction.output_with_data(out_point.index().unpack()) {
-                Some((output, data)) => CellStatus::live_cell(
-                    CellMetaBuilder::from_cell_output(output, data)
+                Some((output, data)) => {
+                    let mut cell_meta = CellMetaBuilder::from_cell_output(output, data)
                         .out_point(out_point.to_owned())
-                        .build(),
-                ),
+                        .build();
+                    if !with_data {
+                        cell_meta.mem_cell_data = None;
+                    }
+                    CellStatus::live_cell(cell_meta)
+                }
                 None => CellStatus::Unknown,
             }
         } else {
@@ -148,7 +152,9 @@ mod tests {
             .build()
     }
 
-    const MOCK_CYCLES: Cycle = 5_000_000;
+    // Choose 5_000_839, so the vbytes is 853.0001094046, which will not lead to carry when
+    // calculating the vbytes for a package.
+    const MOCK_CYCLES: Cycle = 5_000_839;
     const MOCK_SIZE: usize = 200;
 
     #[test]

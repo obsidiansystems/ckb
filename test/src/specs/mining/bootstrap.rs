@@ -14,12 +14,13 @@ pub struct BootstrapCellbase;
 impl Spec for BootstrapCellbase {
     crate::name!("bootstrap_cellbase");
 
+    // Since mining reward is delay sent in ckb, the 0 - PROPOSAL_WINDOW.furthest blocks'
+    //    cellbase's outputs is empty, which called as bootstrap_cellbase
+
     fn run(&self, net: &mut Net) {
         let node = &net.nodes[0];
 
-        let blk_hashes: Vec<_> = (0..=DEFAULT_TX_PROPOSAL_WINDOW.1)
-            .map(|_| node.generate_block())
-            .collect();
+        let blk_hashes = node.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 1) as usize);
 
         let miner = packed::Script::new_builder()
             .args(Bytes::from(vec![2, 1]).pack())
@@ -37,10 +38,15 @@ impl Spec for BootstrapCellbase {
                 && blk.transactions()[0].outputs().as_reader().is_empty()
         };
 
-        assert!(blk_hashes.iter().all(is_bootstrap_cellbase));
+        blk_hashes.iter().enumerate().for_each(|(index, blk_hash)| {
+            assert!(
+                is_bootstrap_cellbase(blk_hash),
+                "The {} block's cellbase should be bootstrap_cellbase",
+                index
+            );
+        });
 
         let hash = node.generate_block();
-
         let blk: BlockView = node.rpc_client().get_block(hash).unwrap().into();
         assert!(
             blk.transactions()[0].is_cellbase()
@@ -51,11 +57,12 @@ impl Spec for BootstrapCellbase {
                     .unwrap()
                     .to_entity()
                     .lock()
-                    == miner
+                    == miner,
+            "PROPOSAL_WINDOW.furthest + 1 block's cellbase should not be bootstrap_cellbase"
         )
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig) -> ()> {
+    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
         Box::new(|config| {
             config.block_assembler = Some(BlockAssemblerConfig {
                 code_hash: h256!("0xa2"),

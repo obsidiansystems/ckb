@@ -1,42 +1,98 @@
 use ckb_error::Error;
-use ckb_types::packed::Byte32;
+use ckb_types::{
+    core::{Capacity, Version},
+    packed::{Byte32, OutPoint},
+};
 use failure::{Backtrace, Context, Fail};
 use std::fmt::{self, Display};
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone, Display)]
+#[derive(Clone, Debug, Display, Eq, PartialEq)]
+pub enum TransactionErrorSource {
+    CellDeps,
+    HeaderDeps,
+    Inputs,
+    Outputs,
+    OutputsData,
+    Witnesses,
+}
+
+#[derive(Fail, Debug, PartialEq, Eq, Clone)]
 pub enum TransactionError {
     /// output.occupied_capacity() > output.capacity()
-    InsufficientCellCapacity,
+    #[fail(
+        display = "InsufficientCellCapacity({}[{}]): expected occupied capacity ({:#x}) <= capacity ({:#x})",
+        source, index, occupied_capacity, capacity
+    )]
+    InsufficientCellCapacity {
+        source: TransactionErrorSource,
+        index: usize,
+        occupied_capacity: Capacity,
+        capacity: Capacity,
+    },
 
     /// SUM([o.capacity for o in outputs]) > SUM([i.capacity for i in inputs])
-    OutputsSumOverflow,
+    #[fail(
+        display = "OutputsSumOverflow: expected outputs capacity ({:#x}) <= inputs capacity ({:#x})",
+        outputs_sum, inputs_sum
+    )]
+    OutputsSumOverflow {
+        inputs_sum: Capacity,
+        outputs_sum: Capacity,
+    },
 
     /// inputs.is_empty() || outputs.is_empty()
-    Empty,
+    #[fail(display = "Empty({})", source)]
+    Empty { source: TransactionErrorSource },
 
-    /// Duplicated dep-out-points within the same one transaction
-    DuplicateDeps,
+    /// Duplicated dep-out-points within the same transaction
+    #[fail(display = "DuplicateCellDeps({})", out_point)]
+    DuplicateCellDeps { out_point: OutPoint },
+
+    /// Duplicated headers deps without within the same transaction
+    #[fail(display = "DuplicateHeaderDeps({})", hash)]
+    DuplicateHeaderDeps { hash: Byte32 },
 
     /// outputs.len() != outputs_data.len()
-    OutputsDataLengthMismatch,
-
-    /// ANY([o.data_hash != d.data_hash() for (o, d) in ZIP(outputs, outputs_data)])
-    OutputDataHashMismatch,
+    #[fail(
+        display = "OutputsDataLengthMismatch: expected outputs data length ({}) = outputs length ({})",
+        outputs_data_len, outputs_len
+    )]
+    OutputsDataLengthMismatch {
+        outputs_len: usize,
+        outputs_data_len: usize,
+    },
 
     /// The format of `transaction.since` is invalid
-    InvalidSince,
+    #[fail(
+        display = "InvalidSince(Inputs[{}]): the field since is invalid",
+        index
+    )]
+    InvalidSince { index: usize },
 
     /// The transaction is not mature which is required by `transaction.since`
-    Immature,
+    #[fail(
+        display = "Immature(Inputs[{}]): the transaction is immature because of the since requirement",
+        index
+    )]
+    Immature { index: usize },
 
     /// The transaction is not mature which is required by cellbase maturity rule
-    CellbaseImmaturity,
+    #[fail(display = "CellbaseImmaturity({}[{}])", source, index)]
+    CellbaseImmaturity {
+        source: TransactionErrorSource,
+        index: usize,
+    },
 
     /// The transaction version is mismatched with the system can hold
-    MismatchedVersion,
+    #[fail(display = "MismatchedVersion: expected {}, got {}", expected, actual)]
+    MismatchedVersion { expected: Version, actual: Version },
 
     /// The transaction size is too large
-    ExceededMaximumBlockBytes,
+    #[fail(
+        display = "ExceededMaximumBlockBytes: expected transaction serialized size ({}) < block size limit ({})",
+        actual, limit
+    )]
+    ExceededMaximumBlockBytes { limit: u64, actual: u64 },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Display)]
@@ -46,6 +102,7 @@ pub enum HeaderErrorKind {
     Timestamp,
     Number,
     Epoch,
+    Version,
 }
 
 #[derive(Debug)]
@@ -94,8 +151,6 @@ pub enum BlockErrorKind {
     ExceededMaximumCycles,
 
     ExceededMaximumBlockBytes,
-
-    Version,
 }
 
 #[derive(Fail, Debug)]
@@ -173,7 +228,17 @@ pub enum UnclesError {
 }
 
 #[derive(Fail, Debug, PartialEq, Eq, Clone)]
-#[fail(display = "InvalidParentError(parent_hash: {})gg '", parent_hash)]
+#[fail(
+    display = "BlockVersionError(expected: {}, actual: {})",
+    expected, actual
+)]
+pub struct BlockVersionError {
+    pub expected: Version,
+    pub actual: Version,
+}
+
+#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+#[fail(display = "InvalidParentError(parent_hash: {})", parent_hash)]
 pub struct InvalidParentError {
     pub parent_hash: Byte32,
 }
@@ -183,7 +248,9 @@ pub enum PowError {
     #[fail(display = "Boundary(expected: {}, actual: {})", expected, actual)]
     Boundary { expected: Byte32, actual: Byte32 },
 
-    #[fail(display = "InvalidNonce")]
+    #[fail(
+        display = "InvalidNonce: please set logger.filter to \"info,ckb-pow=debug\" to see detailed PoW verification information in the log"
+    )]
     InvalidNonce,
 }
 
@@ -194,6 +261,15 @@ pub enum TimestampError {
 
     #[fail(display = "BlockTimeTooNew(max: {}, actual: {})", max, actual)]
     BlockTimeTooNew { max: u64, actual: u64 },
+}
+
+impl TimestampError {
+    pub fn is_too_new(&self) -> bool {
+        match self {
+            Self::BlockTimeTooOld { .. } => false,
+            Self::BlockTimeTooNew { .. } => true,
+        }
+    }
 }
 
 #[derive(Fail, Debug, PartialEq, Eq, Clone)]
@@ -218,18 +294,18 @@ pub enum EpochError {
 impl TransactionError {
     pub fn is_malformed_tx(&self) -> bool {
         match self {
-            TransactionError::OutputsSumOverflow
-            | TransactionError::DuplicateDeps
-            | TransactionError::Empty
-            | TransactionError::InsufficientCellCapacity
-            | TransactionError::InvalidSince
-            | TransactionError::ExceededMaximumBlockBytes
-            | TransactionError::OutputsDataLengthMismatch
-            | TransactionError::OutputDataHashMismatch => true,
+            TransactionError::OutputsSumOverflow { .. }
+            | TransactionError::DuplicateCellDeps { .. }
+            | TransactionError::DuplicateHeaderDeps { .. }
+            | TransactionError::Empty { .. }
+            | TransactionError::InsufficientCellCapacity { .. }
+            | TransactionError::InvalidSince { .. }
+            | TransactionError::ExceededMaximumBlockBytes { .. }
+            | TransactionError::OutputsDataLengthMismatch { .. } => true,
 
-            TransactionError::Immature
-            | TransactionError::CellbaseImmaturity
-            | TransactionError::MismatchedVersion => false,
+            TransactionError::Immature { .. }
+            | TransactionError::CellbaseImmaturity { .. }
+            | TransactionError::MismatchedVersion { .. } => false,
         }
     }
 }
@@ -282,6 +358,18 @@ impl HeaderError {
     pub fn inner(&self) -> &Context<HeaderErrorKind> {
         &self.kind
     }
+
+    // Note: if the header is invalid, that may also be grounds for disconnecting the peer,
+    // However, there is a circumstance where that does not hold:
+    // if the header's timestamp is more than ALLOWED_FUTURE_BLOCKTIME ahead of our current time.
+    // In that case, the header may become valid in the future,
+    // and we don't want to disconnect a peer merely for serving us one too-far-ahead block header,
+    // to prevent an attacker from splitting the network by mining a block right at the ALLOWED_FUTURE_BLOCKTIME boundary.
+    pub fn is_too_new(&self) -> bool {
+        self.downcast_ref::<TimestampError>()
+            .map(|e| e.is_too_new())
+            .unwrap_or(false)
+    }
 }
 
 impl From<Context<BlockErrorKind>> for BlockError {
@@ -311,5 +399,47 @@ impl BlockError {
 
     pub fn inner(&self) -> &Context<BlockErrorKind> {
         &self.kind
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_too_new() {
+        let too_old = TimestampError::BlockTimeTooOld { min: 0, actual: 0 };
+        let too_new = TimestampError::BlockTimeTooNew { max: 0, actual: 0 };
+
+        let errors: Vec<HeaderError> = vec![
+            HeaderErrorKind::InvalidParent.into(),
+            HeaderErrorKind::Pow.into(),
+            HeaderErrorKind::Version.into(),
+            HeaderErrorKind::Epoch.into(),
+            HeaderErrorKind::Version.into(),
+            HeaderErrorKind::Timestamp.into(),
+            too_old.into(),
+            too_new.into(),
+        ];
+
+        let is_too_new: Vec<bool> = errors.iter().map(|e| e.is_too_new()).collect();
+        assert_eq!(
+            is_too_new,
+            vec![false, false, false, false, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn test_version_error_display() {
+        let e: Error = BlockVersionError {
+            expected: 0,
+            actual: 1,
+        }
+        .into();
+
+        assert_eq!(
+            "Header(Version(BlockVersionError(expected: 0, actual: 1)))",
+            format!("{}", e)
+        );
     }
 }

@@ -32,8 +32,7 @@ impl RocksDBSnapshot {
 
     pub fn get_pinned(&self, col: Col, key: &[u8]) -> Result<Option<DBPinnableSlice>> {
         let cf = cf_handle(&self.db, col)?;
-        self.db
-            .get_pinned_cf_full(Some(cf), &key, None)
+        self.get_pinned_cf_full(Some(cf), &key, None)
             .map_err(internal_error)
     }
 }
@@ -105,7 +104,7 @@ impl Drop for RocksDBSnapshot {
 }
 
 impl Iterate for RocksDBSnapshot {
-    fn get_raw_iter(&self, readopts: &ReadOptions) -> DBRawIterator {
+    fn get_raw_iter<'a: 'b, 'b>(&'a self, readopts: &ReadOptions) -> DBRawIterator<'b> {
         let mut ro = readopts.to_owned();
         ro.set_snapshot(self);
         self.db.get_raw_iter(&ro)
@@ -113,11 +112,11 @@ impl Iterate for RocksDBSnapshot {
 }
 
 impl IterateCF for RocksDBSnapshot {
-    fn get_raw_iter_cf(
-        &self,
+    fn get_raw_iter_cf<'a: 'b, 'b>(
+        &'a self,
         cf_handle: &ColumnFamily,
         readopts: &ReadOptions,
-    ) -> ::std::result::Result<DBRawIterator, Error> {
+    ) -> ::std::result::Result<DBRawIterator<'b>, Error> {
         let mut ro = readopts.to_owned();
         ro.set_snapshot(self);
         self.db.get_raw_iter_cf(cf_handle, &ro)

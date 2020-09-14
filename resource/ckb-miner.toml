@@ -32,12 +32,16 @@ log_to_stdout = true # {{
 [sentry]
 # set to blank to disable sentry error collection
 dsn = "" # {{
-# testnet => dsn = "https://48c6a88d92e246478e2d53b5917a887c@sentry.io/1422795"
-# staging => dsn = "https://48c6a88d92e246478e2d53b5917a887c@sentry.io/1422795"
+# testnet => dsn = "https://dda4f353e15f4b62800d273a2afe70c2@sentry.nervos.org/4"
+# staging => dsn = "https://dda4f353e15f4b62800d273a2afe70c2@sentry.nervos.org/4"
 # }}
 # if you are willing to help us to improve,
 # please leave a way to contact you when we have troubles to reproduce the errors.
 # org_contact = ""
+
+# [memory_tracker]
+# # Seconds between checking the process, 0 is disable, default is 0.
+# interval = 600
 
 [miner.client]
 rpc_url = "http://127.0.0.1:8114/" # {{
@@ -56,4 +60,5 @@ worker_type = "EaglesongSimple" # {{
 # }}
 threads     = 1 # {{
 # dev => delay_type = "Constant"\nvalue = 5000
+# testnet => threads     = 1\nextra_hash_function = "Blake2b"
 # }}

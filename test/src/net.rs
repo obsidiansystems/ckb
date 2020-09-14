@@ -1,16 +1,19 @@
 use crate::specs::TestProtocol;
 use crate::utils::{temp_path, wait_until};
 use crate::{Node, Setup};
+use ckb_app_config::NetworkConfig;
+use ckb_channel::{self as channel, Receiver, RecvTimeoutError, Sender};
 use ckb_network::{
-    bytes::Bytes, CKBProtocol, CKBProtocolContext, CKBProtocolHandler, NetworkConfig,
+    bytes::Bytes, CKBProtocol, CKBProtocolContext, CKBProtocolHandler, DefaultExitHandler,
     NetworkController, NetworkService, NetworkState, PeerIndex, ProtocolId,
 };
 use ckb_types::core::{BlockNumber, BlockView};
-use ckb_util::{Condvar, Mutex};
-use crossbeam_channel::{self, Receiver, RecvTimeoutError, Sender};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU16, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 pub type NetMessage = (PeerIndex, ProtocolId, Bytes);
@@ -18,30 +21,37 @@ pub type NetMessage = (PeerIndex, ProtocolId, Bytes);
 pub struct Net {
     pub nodes: Vec<Node>,
     controller: Option<(NetworkController, Receiver<NetMessage>)>,
-    start_port: u16,
+    p2p_port: u16,
     setup: Setup,
     working_dir: String,
     vendor_dir: PathBuf,
 }
 
 impl Net {
-    pub fn new(binary: &str, start_port: u16, vendor_dir: PathBuf, setup: Setup) -> Self {
+    pub fn new(
+        binary: &str,
+        start_port: Arc<AtomicU16>,
+        vendor_dir: PathBuf,
+        setup: Setup,
+        case_name: &str,
+    ) -> Self {
+        let p2p_port = start_port.fetch_add(1, Ordering::SeqCst);
         let nodes: Vec<Node> = (0..setup.num_nodes)
-            .map(|n| {
-                Node::new(
-                    binary,
-                    start_port + (n * 2 + 1) as u16,
-                    start_port + (n * 2 + 2) as u16,
-                )
+            .enumerate()
+            .map(|(index, _)| {
+                let node_index = "node".to_owned() + &index.to_string();
+                let p2p_port = start_port.fetch_add(1, Ordering::SeqCst);
+                let rpc_port = start_port.fetch_add(1, Ordering::SeqCst);
+                Node::new(binary, p2p_port, rpc_port, case_name, &node_index)
             })
             .collect();
 
         Self {
             nodes,
             controller: None,
-            start_port,
+            p2p_port,
             setup,
-            working_dir: temp_path(),
+            working_dir: temp_path(case_name, "net"),
             vendor_dir,
         }
     }
@@ -66,7 +76,7 @@ impl Net {
     }
 
     pub fn p2p_port(&self) -> u16 {
-        self.start_port
+        self.p2p_port
     }
 
     fn test_protocols(&self) -> &[TestProtocol] {
@@ -84,9 +94,9 @@ impl Net {
         );
         assert!(self.controller.is_none());
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = channel::unbounded();
         let config = NetworkConfig {
-            listen_addresses: vec![format!("/ip4/127.0.0.1/tcp/{}", self.start_port)
+            listen_addresses: vec![format!("/ip4/127.0.0.1/tcp/{}", self.p2p_port())
                 .parse()
                 .expect("invalid address")],
             public_addresses: vec![],
@@ -104,6 +114,7 @@ impl Net {
             upnp: false,
             bootnode_mode: false,
             max_send_buffer: None,
+            sync: None,
         };
 
         let network_state =
@@ -114,14 +125,14 @@ impl Net {
             .iter()
             .cloned()
             .map(|tp| {
-                let tx = tx.clone();
                 CKBProtocol::new(
                     tp.protocol_name,
                     tp.id,
                     &tp.supported_versions,
                     1024 * 1024,
-                    move || Box::new(DummyProtocolHandler { tx: tx.clone() }),
+                    Box::new(DummyProtocolHandler { tx: tx.clone() }),
                     Arc::clone(&network_state),
+                    Default::default(),
                 )
             })
             .collect();
@@ -133,16 +144,16 @@ impl Net {
                 Vec::new(),
                 node.consensus().identify_name(),
                 "0.1.0".to_string(),
-                Arc::new((Mutex::new(()), Condvar::new())),
+                DefaultExitHandler::default(),
             )
-            .start(Default::default(), Some("NetworkService"))
+            .start(Some("NetworkService"))
             .expect("Start network service failed"),
             rx,
         ));
 
         let ptr = self as *const Self as *mut Self;
         unsafe {
-            ::std::mem::replace(&mut (*ptr).controller, controller);
+            let _ingore_prev_value = ::std::mem::replace(&mut (*ptr).controller, controller);
         }
     }
 

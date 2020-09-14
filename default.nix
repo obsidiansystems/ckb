@@ -11,7 +11,7 @@
 , rustPackages ? rustChannelOf { # channel-rust-1.41.0.toml
     dist_root = "https://static.rust-lang.org/dist";
     rustToolchain = ./rust-toolchain;
-    sha256 = "07mp7n4n3cmm37mv152frv7p9q58ahjw5k8gcq48vfczrgm5qgiy";
+    sha256 = "0yvh2ck2vqas164yh01ggj4ckznx04blz3jgbkickfgjm18y269j";
   } }:
 let
   rustPlatform = pkgs.makeRustPlatform {
@@ -27,5 +27,5 @@ in rustPlatform.buildRustPackage {
   verifyCargoDeps = true;
 
   # Cargo hash must be updated when Cargo.lock file changes.
-  cargoSha256 = "1i9wlnw01d2ns1cn039mhhhdl7ka59zzxmlgdvrf4shv575l44j7";
+  cargoSha256 = "0vg7alicwwzf85j6vxkzm3zngvmyzzsxjclcm4gdsn0vfib4r0mv";
 }

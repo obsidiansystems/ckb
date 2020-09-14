@@ -1,5 +1,6 @@
 use crate::chain::ChainService;
 use crate::{chain::ChainController, switch::Switch};
+use ckb_app_config::BlockAssemblerConfig;
 use ckb_chain_spec::consensus::Consensus;
 use ckb_dao_utils::genesis_dao_data;
 use ckb_jsonrpc_types::BlockTemplate;
@@ -8,7 +9,7 @@ use ckb_shared::shared::Shared;
 use ckb_shared::shared::SharedBuilder;
 use ckb_shared::Snapshot;
 use ckb_store::ChainStore;
-use ckb_tx_pool::{BlockAssemblerConfig, PlugTarget, TxEntry};
+use ckb_tx_pool::{PlugTarget, TxEntry};
 use ckb_types::{
     bytes::Bytes,
     core::{
@@ -195,11 +196,17 @@ fn test_prepare_uncles() {
 
     let tx_pool = shared.tx_pool_controller();
 
-    // block number 3, epoch 0
-    let block_template = tx_pool
+    let mut block_template = tx_pool
         .get_block_template(None, None, None)
         .unwrap()
         .unwrap();
+    // block number 3, epoch 0
+    while (Into::<u64>::into(block_template.number)) != 3 {
+        block_template = tx_pool
+            .get_block_template(None, None, None)
+            .unwrap()
+            .unwrap()
+    }
     assert_eq!(block_template.uncles[0].hash, block0_0.hash().unpack());
 
     let last_epoch = epoch;
@@ -213,10 +220,16 @@ fn test_prepare_uncles() {
         .internal_process_block(Arc::new(block2_1.clone()), Switch::DISABLE_ALL)
         .unwrap();
 
-    let block_template = tx_pool
+    let mut block_template = tx_pool
         .get_block_template(None, None, None)
         .unwrap()
         .unwrap();
+    while (Into::<u64>::into(block_template.number)) != 4 {
+        block_template = tx_pool
+            .get_block_template(None, None, None)
+            .unwrap()
+            .unwrap()
+    }
     // block number 4, epoch 0, uncles should retained
     assert_eq!(block_template.uncles[0].hash, block0_0.hash().unpack());
 

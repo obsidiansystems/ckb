@@ -1,12 +1,13 @@
 [package]
 name = "ckb-stop-handler"
-version = "0.30.1-pre"
+version = "0.36.0-pre"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 license = "MIT"
 
 [dependencies]
 parking_lot = "=0.7.1"
-crossbeam-channel = "0.3"
 ckb-logger = { path = "../logger" }
 futures = "0.1"
+tokio = { version = "0.2", features = ["sync", "blocking", "rt-threaded"] }
+ckb-channel = { path = "../channel" }

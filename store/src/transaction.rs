@@ -91,9 +91,7 @@ impl StoreTransaction {
         self.inner
             .get_for_update(COLUMN_META, META_TIP_HEADER_KEY, &snapshot.inner)
             .expect("db operation should be ok")
-            .map(|slice| {
-                packed::Byte32Reader::from_slice_should_be_ok(&slice.as_ref()[..]).to_entity()
-            })
+            .map(|slice| packed::Byte32Reader::from_slice_should_be_ok(&slice.as_ref()).to_entity())
     }
 
     pub fn insert_tip_header(&self, h: &HeaderView) -> Result<(), Error> {
@@ -119,6 +117,22 @@ impl StoreTransaction {
                 .build();
             let tx_data = tx.pack();
             self.insert_raw(COLUMN_BLOCK_BODY, key.as_slice(), tx_data.as_slice())?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_block(&self, hash: &packed::Byte32, txs_len: usize) -> Result<(), Error> {
+        self.delete(COLUMN_BLOCK_HEADER, hash.as_slice())?;
+        self.delete(COLUMN_BLOCK_UNCLE, hash.as_slice())?;
+        self.delete(COLUMN_BLOCK_PROPOSAL_IDS, hash.as_slice())?;
+        // currently rocksdb transaction do not support `DeleteRange`
+        // https://github.com/facebook/rocksdb/issues/4812
+        for index in 0..txs_len {
+            let key = packed::TransactionKey::new_builder()
+                .block_hash(hash.clone())
+                .index(index.pack())
+                .build();
+            self.delete(COLUMN_BLOCK_BODY, key.as_slice())?;
         }
         Ok(())
     }

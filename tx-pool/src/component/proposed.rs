@@ -1,6 +1,6 @@
 use crate::component::container::SortedTxMap;
 use crate::component::entry::TxEntry;
-use crate::error::SubmitTxError;
+use crate::error::Reject;
 use ckb_types::{
     bytes::Bytes,
     core::{
@@ -88,17 +88,19 @@ pub struct ProposedPool {
 }
 
 impl CellProvider for ProposedPool {
-    fn cell(&self, out_point: &OutPoint, _with_data: bool) -> CellStatus {
+    fn cell(&self, out_point: &OutPoint, with_data: bool) -> CellStatus {
         if let Some(x) = self.edges.get_inner(out_point) {
             if x.is_some() {
                 CellStatus::Dead
             } else {
                 let (output, data) = self.get_output_with_data(out_point).expect("output");
-                CellStatus::live_cell(
-                    CellMetaBuilder::from_cell_output(output, data)
-                        .out_point(out_point.clone())
-                        .build(),
-                )
+                let mut cell_meta = CellMetaBuilder::from_cell_output(output, data)
+                    .out_point(out_point.to_owned())
+                    .build();
+                if !with_data {
+                    cell_meta.mem_cell_data = None;
+                }
+                CellStatus::live_cell(cell_meta)
             }
         } else if self.edges.get_outer(out_point).is_some() {
             CellStatus::Dead
@@ -196,7 +198,7 @@ impl ProposedPool {
         removed
     }
 
-    pub(crate) fn add_entry(&mut self, entry: TxEntry) -> Result<Option<TxEntry>, SubmitTxError> {
+    pub(crate) fn add_entry(&mut self, entry: TxEntry) -> Result<Option<TxEntry>, Reject> {
         let inputs = entry.transaction.input_pts_iter();
         let outputs = entry.transaction.output_pts();
 
@@ -553,7 +555,9 @@ mod tests {
 
         let mut pool = ProposedPool::new(DEFAULT_MAX_ANCESTORS_SIZE);
 
-        let cycles = 5_000_000;
+        // Choose 5_000_839, so the vbytes is 853.0001094046, which will not lead to carry when
+        // calculating the vbytes for a package.
+        let cycles = 5_000_839;
         let size = 200;
 
         for &tx in &[&tx1, &tx2, &tx3, &tx2_1, &tx2_2, &tx2_3, &tx2_4] {

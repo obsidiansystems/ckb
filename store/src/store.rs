@@ -13,18 +13,24 @@ use ckb_db::{
 use ckb_types::{
     bytes::Bytes,
     core::{
-        cell::CellMeta, BlockExt, BlockNumber, BlockView, EpochExt, EpochNumber, HeaderView,
-        TransactionInfo, TransactionMeta, TransactionView, UncleBlockVecView,
+        cell::{CellMeta, CellProvider, CellStatus},
+        BlockExt, BlockNumber, BlockView, EpochExt, EpochNumber, HeaderView, TransactionInfo,
+        TransactionMeta, TransactionView, UncleBlockVecView,
     },
-    packed,
+    packed::{self, OutPoint},
     prelude::*,
 };
 
-pub trait ChainStore<'a>: Send + Sync {
+pub struct CellProviderWrapper<'a, S>(&'a S);
+
+pub trait ChainStore<'a>: Send + Sync + Sized {
     type Vector: AsRef<[u8]>;
     fn cache(&'a self) -> Option<&'a StoreCache>;
     fn get(&'a self, col: Col, key: &[u8]) -> Option<Self::Vector>;
     fn get_iter(&self, col: Col, mode: IteratorMode) -> DBIter;
+    fn cell_provider(&self) -> CellProviderWrapper<Self> {
+        CellProviderWrapper(self)
+    }
 
     /// Get block by block header hash
     fn get_block(&'a self, h: &packed::Byte32) -> Option<BlockView> {
@@ -169,22 +175,20 @@ pub trait ChainStore<'a>: Send + Sync {
     /// Get block ext by block header hash
     fn get_block_ext(&'a self, block_hash: &packed::Byte32) -> Option<BlockExt> {
         self.get(COLUMN_BLOCK_EXT, block_hash.as_slice())
-            .map(|slice| {
-                packed::BlockExtReader::from_slice_should_be_ok(&slice.as_ref()[..]).unpack()
-            })
+            .map(|slice| packed::BlockExtReader::from_slice_should_be_ok(&slice.as_ref()).unpack())
     }
 
     /// Get block header hash by block number
     fn get_block_hash(&'a self, number: BlockNumber) -> Option<packed::Byte32> {
         let block_number: packed::Uint64 = number.pack();
         self.get(COLUMN_INDEX, block_number.as_slice())
-            .map(|raw| packed::Byte32Reader::from_slice_should_be_ok(&raw.as_ref()[..]).to_entity())
+            .map(|raw| packed::Byte32Reader::from_slice_should_be_ok(&raw.as_ref()).to_entity())
     }
 
     /// Get block number by block header hash
     fn get_block_number(&'a self, hash: &packed::Byte32) -> Option<BlockNumber> {
         self.get(COLUMN_INDEX, hash.as_slice())
-            .map(|raw| packed::Uint64Reader::from_slice_should_be_ok(&raw.as_ref()[..]).unpack())
+            .map(|raw| packed::Uint64Reader::from_slice_should_be_ok(&raw.as_ref()).unpack())
     }
 
     fn is_main_chain(&'a self, hash: &packed::Byte32) -> bool {
@@ -195,7 +199,7 @@ pub trait ChainStore<'a>: Send + Sync {
         self.get(COLUMN_META, META_TIP_HEADER_KEY)
             .and_then(|raw| {
                 self.get_block_header(
-                    &packed::Byte32Reader::from_slice_should_be_ok(&raw.as_ref()[..]).to_entity(),
+                    &packed::Byte32Reader::from_slice_should_be_ok(&raw.as_ref()).to_entity(),
                 )
             })
             .map(Into::into)
@@ -418,5 +422,79 @@ pub trait ChainStore<'a>: Send + Sync {
             |hash| self.get_block_header(&hash),
             |hash| self.get_block_ext(&hash).map(|ext| ext.total_uncles_count),
         )
+    }
+
+    fn get_packed_block(&'a self, hash: &packed::Byte32) -> Option<packed::Block> {
+        self.get_packed_block_header(hash).map(|header| {
+            let txs = {
+                let prefix = hash.as_slice();
+                self.get_iter(
+                    COLUMN_BLOCK_BODY,
+                    IteratorMode::From(prefix, Direction::Forward),
+                )
+                .take_while(|(key, _)| key.starts_with(prefix))
+                .map(|(_key, value)| {
+                    let reader =
+                        packed::TransactionViewReader::from_slice_should_be_ok(&value.as_ref());
+                    reader.data().to_entity()
+                })
+                .pack()
+            };
+            let uncles = self
+                .get(COLUMN_BLOCK_UNCLE, hash.as_slice())
+                .map(|slice| {
+                    let reader =
+                        packed::UncleBlockVecViewReader::from_slice_should_be_ok(&slice.as_ref());
+                    reader.data().to_entity()
+                })
+                .expect("block uncles must be stored");
+            let proposals = self
+                .get(COLUMN_BLOCK_PROPOSAL_IDS, hash.as_slice())
+                .map(|slice| {
+                    packed::ProposalShortIdVecReader::from_slice_should_be_ok(&slice.as_ref())
+                        .to_entity()
+                })
+                .expect("block proposal_ids must be stored");
+            packed::BlockBuilder::default()
+                .header(header)
+                .transactions(txs)
+                .uncles(uncles)
+                .proposals(proposals)
+                .build()
+        })
+    }
+
+    fn get_packed_block_header(&'a self, hash: &packed::Byte32) -> Option<packed::Header> {
+        self.get(COLUMN_BLOCK_HEADER, hash.as_slice()).map(|slice| {
+            let reader = packed::HeaderViewReader::from_slice_should_be_ok(&slice.as_ref());
+            reader.data().to_entity()
+        })
+    }
+}
+
+impl<'a, S> CellProvider for CellProviderWrapper<'a, S>
+where
+    S: ChainStore<'a>,
+{
+    fn cell(&self, out_point: &OutPoint, with_data: bool) -> CellStatus {
+        let tx_hash = out_point.tx_hash();
+        let index = out_point.index().unpack();
+        match self.0.get_tx_meta(&tx_hash) {
+            Some(tx_meta) => match tx_meta.is_dead(index as usize) {
+                Some(false) => {
+                    let mut cell_meta = self
+                        .0
+                        .get_cell_meta(&tx_hash, index)
+                        .expect("store should be consistent with cell_set");
+                    if with_data {
+                        cell_meta.mem_cell_data = self.0.get_cell_data(&tx_hash, index);
+                    }
+                    CellStatus::live_cell(cell_meta)
+                }
+                Some(true) => CellStatus::Dead,
+                None => CellStatus::Unknown,
+            },
+            None => CellStatus::Unknown,
+        }
     }
 }

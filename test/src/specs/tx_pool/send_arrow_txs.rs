@@ -1,6 +1,6 @@
 use crate::{Net, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
 use ckb_app_config::CKBAppConfig;
-use ckb_tx_pool::FeeRate;
+use ckb_fee_estimator::FeeRate;
 use ckb_types::{
     packed::{CellInput, OutPoint},
     prelude::*,
@@ -43,7 +43,7 @@ impl Spec for SendArrowTxs {
         assert!(ret.is_err());
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig) -> ()> {
+    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
         Box::new(|config| {
             config.tx_pool.min_fee_rate = FeeRate::from_u64(0);
             config.tx_pool.max_ancestors_count = MAX_ANCESTORS_COUNT;

@@ -1,6 +1,6 @@
 [package]
 name = "ckb-sync"
-version = "0.30.1-pre"
+version = "0.36.0-pre"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -9,24 +9,35 @@ edition = "2018"
 ckb-chain = { path = "../chain" }
 ckb-shared = { path = "../shared" }
 ckb-store = { path = "../store" }
+ckb-db = { path = "../db" }
+ckb-app-config = {path = "../util/app-config"}
 ckb-types = {path = "../util/types"}
 ckb-network = { path = "../network" }
 ckb-logger = {path = "../util/logger"}
+ckb-metrics = {path = "../util/metrics"}
 ckb-util = { path = "../util" }
 faketime = "0.2.0"
 bitflags = "1.0"
 ckb-verification = { path = "../verification" }
 ckb-chain-spec = { path = "../spec" }
+ckb-channel = { path = "../util/channel" }
 ckb-traits = { path = "../traits" }
 failure = "0.1.5"
 lru-cache = { git = "https://github.com/nervosnetwork/lru-cache", rev = "a35fdb8" }
-sentry = "0.16.0"
-futures = "0.1"
+sentry = "0.17.0"
+futures = "0.3"
 ckb-error = {path = "../error"}
 ckb-tx-pool = { path = "../tx-pool" }
+ckb-fee-estimator = { path = "../util/fee-estimator" }
+ratelimit_meter = "5.0"
+tempfile = "3.0"
 
 [dev-dependencies]
 ckb-test-chain-utils = { path = "../util/test-chain-utils" }
 rand = "0.6"
 ckb-dao = { path = "../util/dao" }
 ckb-dao-utils = { path = "../util/dao/utils" }
+
+[features]
+default = []
+stats = []

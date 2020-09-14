@@ -2,17 +2,13 @@ use crate::block_status::BlockStatus;
 use crate::relayer::compact_block_verifier::CompactBlockVerifier;
 use crate::relayer::{ReconstructionResult, Relayer};
 use crate::{attempt, Status, StatusCode};
-use ckb_logger::{self, debug_target, metric};
+use ckb_chain_spec::consensus::Consensus;
+use ckb_logger::{self, debug_target};
+use ckb_metrics::metrics;
 use ckb_network::{CKBProtocolContext, PeerIndex};
-use ckb_shared::Snapshot;
-use ckb_store::ChainStore;
-use ckb_traits::BlockMedianTimeContext;
-use ckb_types::{
-    core::{self, BlockNumber},
-    packed,
-    prelude::*,
-};
-use ckb_verification::{HeaderVerifier, Verifier};
+use ckb_traits::{BlockMedianTimeContext, HeaderProvider};
+use ckb_types::{core, packed, prelude::*};
+use ckb_verification::{HeaderError, HeaderVerifier, Verifier};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -47,23 +43,23 @@ impl<'a> CompactBlockProcess<'a> {
     }
 
     pub fn execute(self) -> Status {
-        let snapshot = self.relayer.shared.snapshot();
+        let shared = self.relayer.shared();
         {
             let compact_block = self.message;
-            if compact_block.uncles().len() > snapshot.consensus().max_uncles_num() {
+            if compact_block.uncles().len() > shared.consensus().max_uncles_num() {
                 return StatusCode::ProtocolMessageIsMalformed.with_context(format!(
                     "CompactBlock uncles count({}) > consensus max_uncles_num({})",
                     compact_block.uncles().len(),
-                    snapshot.consensus().max_uncles_num()
+                    shared.consensus().max_uncles_num()
                 ));
             }
             if (compact_block.proposals().len() as u64)
-                > snapshot.consensus().max_block_proposals_limit()
+                > shared.consensus().max_block_proposals_limit()
             {
                 return StatusCode::ProtocolMessageIsMalformed.with_context(format!(
                     "CompactBlock proposals count({}) > consensus max_block_proposals_limit({})",
                     compact_block.proposals().len(),
-                    snapshot.consensus().max_block_proposals_limit(),
+                    shared.consensus().max_block_proposals_limit(),
                 ));
             }
         }
@@ -75,22 +71,36 @@ impl<'a> CompactBlockProcess<'a> {
         // Only accept blocks with a height greater than tip - N
         // where N is the current epoch length
 
-        let tip = snapshot.tip_header();
-        let epoch_length = snapshot.epoch_ext().length();
+        let active_chain = shared.active_chain();
+        let tip = active_chain.tip_header();
+        let epoch_length = active_chain.epoch_ext().length();
         let lowest_number = tip.number().saturating_sub(epoch_length);
 
         if lowest_number > header.number() {
             return StatusCode::CompactBlockIsStaled.with_context(block_hash);
         }
 
-        let status = snapshot.get_block_status(&block_hash);
+        let status = active_chain.get_block_status(&block_hash);
         if status.contains(BlockStatus::BLOCK_STORED) {
+            // update last common header and best known
+            let parent = shared
+                .get_header_view(&header.data().raw().parent_hash(), Some(true))
+                .expect("parent block must exist");
+            let header_view = {
+                let total_difficulty = parent.total_difficulty() + header.difficulty();
+                crate::types::HeaderView::new(header, total_difficulty)
+            };
+
+            let state = shared.state().peers();
+            state.may_set_best_known_header(self.peer, header_view);
+
             return StatusCode::CompactBlockAlreadyStored.with_context(block_hash);
         } else if status.contains(BlockStatus::BLOCK_INVALID) {
             return StatusCode::BlockIsInvalid.with_context(block_hash);
         }
 
-        let parent = snapshot.get_header_view(&header.data().raw().parent_hash());
+        let store_first = tip.number() + 1 >= header.number();
+        let parent = shared.get_header_view(&header.data().raw().parent_hash(), Some(store_first));
         if parent.is_none() {
             debug_target!(
                 crate::LOG_TARGET_RELAY,
@@ -98,7 +108,7 @@ impl<'a> CompactBlockProcess<'a> {
                 block_hash,
                 self.peer
             );
-            snapshot.send_getheaders_to_peer(self.nc.as_ref(), self.peer, &tip);
+            active_chain.send_getheaders_to_peer(self.nc.as_ref(), self.peer, &tip);
             return StatusCode::CompactBlockRequiresParent.with_context(format!(
                 "{} parent: {}",
                 block_hash,
@@ -108,12 +118,12 @@ impl<'a> CompactBlockProcess<'a> {
 
         let parent = parent.unwrap();
 
-        if let Some(flight) = snapshot
+        if let Some(peers) = shared
             .state()
             .read_inflight_blocks()
-            .inflight_state_by_block(&block_hash)
+            .inflight_compact_by_block(&block_hash)
         {
-            if flight.peers.contains(&self.peer) {
+            if peers.contains(&self.peer) {
                 debug_target!(
                     crate::LOG_TARGET_RELAY,
                     "discard already in-flight compact block {}",
@@ -129,7 +139,7 @@ impl<'a> CompactBlockProcess<'a> {
         let mut collision = false;
         {
             // Verify compact block
-            let mut pending_compact_blocks = snapshot.state().pending_compact_blocks();
+            let mut pending_compact_blocks = shared.state().pending_compact_blocks();
             if pending_compact_blocks
                 .get(&block_hash)
                 .map(|(_, peers_map)| peers_map.contains_key(&self.peer))
@@ -143,30 +153,38 @@ impl<'a> CompactBlockProcess<'a> {
                             .get(&block_hash)
                             .map(|(compact_block, _)| compact_block.header().into_view())
                             .or_else(|| {
-                                snapshot
-                                    .get_header_view(&block_hash)
+                                shared
+                                    .get_header_view(&block_hash, None)
                                     .map(|header_view| header_view.into_inner())
                             })
                     }
                 };
-                let resolver = snapshot.new_header_resolver(&header, parent.into_inner());
+                let resolver = shared.new_header_resolver(&header, parent.into_inner());
                 let median_time_context = CompactBlockMedianTimeView {
                     fn_get_pending_header: Box::new(fn_get_pending_header),
-                    snapshot: snapshot.store(),
+                    consensus: shared.consensus(),
                 };
                 let header_verifier =
-                    HeaderVerifier::new(&median_time_context, &snapshot.consensus());
+                    HeaderVerifier::new(&median_time_context, &shared.consensus());
                 if let Err(err) = header_verifier.verify(&resolver) {
-                    snapshot
-                        .state()
-                        .insert_block_status(block_hash.clone(), BlockStatus::BLOCK_INVALID);
-                    return StatusCode::CompactBlockHasInvalidHeader
-                        .with_context(format!("{} {}", block_hash, err));
+                    if err
+                        .downcast_ref::<HeaderError>()
+                        .map(|e| e.is_too_new())
+                        .unwrap_or(false)
+                    {
+                        return Status::ignored();
+                    } else {
+                        shared
+                            .state()
+                            .insert_block_status(block_hash.clone(), BlockStatus::BLOCK_INVALID);
+                        return StatusCode::CompactBlockHasInvalidHeader
+                            .with_context(format!("{} {}", block_hash, err));
+                    }
                 }
                 attempt!(CompactBlockVerifier::verify(&compact_block));
 
                 // Header has been verified ok, update state
-                snapshot.insert_valid_header(self.peer, &header);
+                shared.insert_valid_header(self.peer, &header);
             }
 
             // Request proposal
@@ -181,9 +199,9 @@ impl<'a> CompactBlockProcess<'a> {
             }
 
             // Reconstruct block
-            let ret = self
-                .relayer
-                .reconstruct_block(&snapshot, &compact_block, vec![], &[], &[]);
+            let ret =
+                self.relayer
+                    .reconstruct_block(&active_chain, &compact_block, vec![], &[], &[]);
 
             // Accept block
             // `relayer.accept_block` will make sure the validity of block before persisting
@@ -192,7 +210,7 @@ impl<'a> CompactBlockProcess<'a> {
                 ReconstructionResult::Block(block) => {
                     pending_compact_blocks.remove(&block_hash);
                     self.relayer
-                        .accept_block(&snapshot, self.nc.as_ref(), self.peer, block);
+                        .accept_block(self.nc.as_ref(), self.peer, block);
                     return Status::ok();
                 }
                 ReconstructionResult::Missing(transactions, uncles) => {
@@ -222,11 +240,10 @@ impl<'a> CompactBlockProcess<'a> {
                     (missing_transactions.clone(), missing_uncles.clone()),
                 );
         }
-
-        if !snapshot
+        if !shared
             .state()
             .write_inflight_blocks()
-            .insert(self.peer, block_hash.clone())
+            .compact_reconstruct(self.peer, block_hash.clone())
         {
             debug_target!(
                 crate::LOG_TARGET_RELAY,
@@ -243,18 +260,10 @@ impl<'a> CompactBlockProcess<'a> {
             StatusCode::CompactBlockRequiresFreshTransactions.with_context(&block_hash)
         };
         if !missing_transactions.is_empty() {
-            metric!({
-                "topic": "fresh_transactions",
-                "tags": { "status": format!("{:?}", status.code()), },
-                "fields": { "count": missing_transactions.len(), },
-            });
+            metrics!(value, "ckb-net.fresh", missing_transactions.len() as u64, "type" => "transactions", "status" => status.tag());
         }
         if !missing_uncles.is_empty() {
-            metric!({
-                "topic": "fresh_uncles",
-                "tags": { "status": format!("{:?}", status.code()), },
-                "fields": { "count": missing_uncles.len(), },
-            });
+            metrics!(value, "ckb-net.fresh", missing_uncles.len() as u64, "type" => "uncles", "status" => status.tag());
         }
 
         let content = packed::GetBlockTransactions::new_builder()
@@ -263,11 +272,12 @@ impl<'a> CompactBlockProcess<'a> {
             .uncle_indexes(missing_uncles.pack())
             .build();
         let message = packed::RelayMessage::new_builder().set(content).build();
-        let data = message.as_slice().into();
-        if let Err(err) = self.nc.send_message_to(self.peer, data) {
+
+        if let Err(err) = self.nc.send_message_to(self.peer, message.as_bytes()) {
             return StatusCode::Network
                 .with_context(format!("Send GetBlockTransactions error: {:?}", err));
         }
+        crate::relayer::metrics_counter_send(message.to_enum().item_name());
 
         status
     }
@@ -275,32 +285,18 @@ impl<'a> CompactBlockProcess<'a> {
 
 struct CompactBlockMedianTimeView<'a> {
     fn_get_pending_header: Box<dyn Fn(packed::Byte32) -> Option<core::HeaderView> + 'a>,
-    snapshot: &'a Snapshot,
-}
-
-impl<'a> CompactBlockMedianTimeView<'a> {
-    fn get_header(&self, hash: &packed::Byte32) -> Option<core::HeaderView> {
-        (self.fn_get_pending_header)(hash.to_owned())
-            .or_else(|| self.snapshot.get_block_header(hash))
-    }
+    consensus: &'a Consensus,
 }
 
 impl<'a> BlockMedianTimeContext for CompactBlockMedianTimeView<'a> {
     fn median_block_count(&self) -> u64 {
-        self.snapshot.consensus().median_time_block_count() as u64
+        self.consensus.median_time_block_count() as u64
     }
+}
 
-    fn timestamp_and_parent(
-        &self,
-        block_hash: &packed::Byte32,
-    ) -> (u64, BlockNumber, packed::Byte32) {
-        let header = self
-            .get_header(&block_hash)
-            .expect("[CompactBlockMedianTimeView] blocks used for median time exist");
-        (
-            header.timestamp(),
-            header.number(),
-            header.data().raw().parent_hash(),
-        )
+impl<'a> HeaderProvider for CompactBlockMedianTimeView<'a> {
+    fn get_header(&self, hash: &packed::Byte32) -> Option<core::HeaderView> {
+        // Note: don't query store because we already did that in `fn_get_pending_header -> get_header_view`.
+        (self.fn_get_pending_header)(hash.to_owned())
     }
 }

@@ -1,27 +1,27 @@
 [package]
 name = "ckb-chain"
-version = "0.30.1-pre"
+version = "0.36.0-pre"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 
 [dependencies]
 ckb-logger = { path = "../util/logger" }
+ckb-metrics = { path = "../util/metrics" }
 ckb-types = { path = "../util/types" }
 ckb-shared = { path = "../shared" }
 ckb-chain-spec = { path = "../spec" }
 ckb-store = { path = "../store" }
 ckb-verification = { path = "../verification" }
 faketime = "0.2.0"
-crossbeam-channel = "0.3"
 ckb-stop-handler = { path = "../util/stop-handler" }
 ckb-dao = { path = "../util/dao" }
 ckb-proposal-table = { path = "../util/proposal-table" }
-# DO NOT UPDATE "im", until clippy#4121 be solved
-# https://github.com/rust-lang/rust-clippy/issues/4121
-im = "~12.3"
 ckb-error = { path = "../error" }
+ckb-app-config = { path = "../util/app-config" }
 bitflags = "1.0"
+ckb-rust-unstable-port = { path = "../util/rust-unstable-port" }
+ckb-channel = { path = "../util/channel" }
 
 [dev-dependencies]
 ckb-test-chain-utils = { path = "../util/test-chain-utils" }

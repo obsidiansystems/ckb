@@ -1,6 +1,5 @@
 use crate::{Net, Spec, TestProtocol};
-use ckb_network::bytes::Bytes;
-use ckb_sync::NetworkProtocol;
+use ckb_network::{bytes::Bytes, SupportProtocols};
 use ckb_types::{
     core::UncleBlockView,
     packed::{self, RelayMessage},
@@ -48,9 +47,9 @@ impl Spec for MissingUncleRequest {
         });
 
         net.send(
-            NetworkProtocol::RELAY.into(),
+            SupportProtocols::Relay.protocol_id(),
             peer_id,
-            message.as_slice().into(),
+            message.as_bytes(),
         );
 
         net.should_receive(

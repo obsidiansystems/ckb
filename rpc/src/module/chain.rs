@@ -1,19 +1,20 @@
 use crate::error::RPCError;
 use ckb_jsonrpc_types::{
     BlockEconomicState, BlockNumber, BlockReward, BlockView, CellOutputWithOutPoint,
-    CellWithStatus, EpochNumber, EpochView, HeaderView, OutPoint, TransactionWithStatus,
+    CellWithStatus, EpochNumber, EpochView, HeaderView, OutPoint, ResponseFormat,
+    TransactionWithStatus, Uint32,
 };
-use ckb_logger::{error, warn};
+use ckb_logger::error;
 use ckb_reward_calculator::RewardCalculator;
 use ckb_shared::shared::Shared;
 use ckb_store::ChainStore;
 use ckb_types::{
     core::{self, cell::CellProvider},
-    packed,
+    packed::{self, Block, Header},
     prelude::*,
     H256,
 };
-use jsonrpc_core::{Error, Result};
+use jsonrpc_core::Result;
 use jsonrpc_derive::rpc;
 
 pub const PAGE_SIZE: u64 = 100;
@@ -21,16 +22,32 @@ pub const PAGE_SIZE: u64 = 100;
 #[rpc(server)]
 pub trait ChainRpc {
     #[rpc(name = "get_block")]
-    fn get_block(&self, _hash: H256) -> Result<Option<BlockView>>;
+    fn get_block(
+        &self,
+        hash: H256,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<BlockView, Block>>>;
 
     #[rpc(name = "get_block_by_number")]
-    fn get_block_by_number(&self, _number: BlockNumber) -> Result<Option<BlockView>>;
+    fn get_block_by_number(
+        &self,
+        number: BlockNumber,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<BlockView, Block>>>;
 
     #[rpc(name = "get_header")]
-    fn get_header(&self, _hash: H256) -> Result<Option<HeaderView>>;
+    fn get_header(
+        &self,
+        hash: H256,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<HeaderView, Header>>>;
 
     #[rpc(name = "get_header_by_number")]
-    fn get_header_by_number(&self, _number: BlockNumber) -> Result<Option<HeaderView>>;
+    fn get_header_by_number(
+        &self,
+        number: BlockNumber,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<HeaderView, Header>>>;
 
     #[rpc(name = "get_transaction")]
     fn get_transaction(&self, _hash: H256) -> Result<Option<TransactionWithStatus>>;
@@ -39,9 +56,12 @@ pub trait ChainRpc {
     fn get_block_hash(&self, _number: BlockNumber) -> Result<Option<H256>>;
 
     #[rpc(name = "get_tip_header")]
-    fn get_tip_header(&self) -> Result<HeaderView>;
+    fn get_tip_header(
+        &self,
+        verbosity: Option<Uint32>,
+    ) -> Result<ResponseFormat<HeaderView, Header>>;
 
-    #[rpc(name = "get_cells_by_lock_hash")]
+    #[rpc(name = "deprecated.get_cells_by_lock_hash")]
     fn get_cells_by_lock_hash(
         &self,
         _lock_hash: H256,
@@ -72,65 +92,136 @@ pub(crate) struct ChainRpcImpl {
     pub shared: Shared,
 }
 
+const DEFAULT_BLOCK_VERBOSITY_LEVEL: u32 = 2;
+const DEFAULT_HEADER_VERBOSITY_LEVEL: u32 = 1;
+
 impl ChainRpc for ChainRpcImpl {
-    fn get_block(&self, hash: H256) -> Result<Option<BlockView>> {
+    fn get_block(
+        &self,
+        hash: H256,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<BlockView, Block>>> {
         let snapshot = self.shared.snapshot();
-        if !snapshot.is_main_chain(&hash.pack()) {
+        let block_hash = hash.pack();
+        if !snapshot.is_main_chain(&block_hash) {
             return Ok(None);
         }
 
-        Ok(snapshot.get_block(&hash.pack()).map(Into::into))
+        let verbosity = verbosity
+            .map(|v| v.value())
+            .unwrap_or(DEFAULT_BLOCK_VERBOSITY_LEVEL);
+        // TODO: verbosity level == 1, output block only contains tx_hash in json format
+        if verbosity == 2 {
+            Ok(snapshot
+                .get_block(&block_hash)
+                .map(|block| ResponseFormat::Json(block.into())))
+        } else if verbosity == 0 {
+            Ok(snapshot
+                .get_packed_block(&block_hash)
+                .map(ResponseFormat::Hex))
+        } else {
+            Err(RPCError::invalid_params("invalid verbosity level"))
+        }
     }
 
-    fn get_block_by_number(&self, number: BlockNumber) -> Result<Option<BlockView>> {
+    fn get_block_by_number(
+        &self,
+        number: BlockNumber,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<BlockView, Block>>> {
         let snapshot = self.shared.snapshot();
-        let ret = snapshot
-            .get_block_hash(number.into())
-            .and_then(|hash| snapshot.get_block(&hash));
-        if let Some(ref block) = ret {
-            if block.transactions().is_empty() {
-                use sentry::{capture_message, with_scope, Level};
-                let tip_header_hash = snapshot.tip_header().hash();
-                with_scope(
-                    |scope| scope.set_fingerprint(Some(&["ckb-rpc", "get_block_by_number"])),
-                    || {
-                        capture_message(
-                            &format!(
-                                "get_block_by_number transactions is empty {} {} tip_header {}",
-                                block.number(),
-                                block.hash(),
-                                tip_header_hash,
-                            ),
-                            Level::Warning,
-                        )
-                    },
-                );
-                warn!(
-                    "get_block_by_number transactions is empty {} {} tip_header {}",
-                    block.number(),
-                    block.hash(),
-                    tip_header_hash,
-                );
-            }
+        let block_hash = match snapshot.get_block_hash(number.into()) {
+            Some(block_hash) => block_hash,
+            None => return Ok(None),
         };
-        Ok(ret.map(Into::into))
+
+        let verbosity = verbosity
+            .map(|v| v.value())
+            .unwrap_or(DEFAULT_BLOCK_VERBOSITY_LEVEL);
+        // TODO: verbosity level == 1, output block only contains tx_hash in json format
+        let result = if verbosity == 2 {
+            snapshot
+                .get_block(&block_hash)
+                .map(|block| Some(ResponseFormat::Json(block.into())))
+        } else if verbosity == 0 {
+            snapshot
+                .get_packed_block(&block_hash)
+                .map(|block| Some(ResponseFormat::Hex(block)))
+        } else {
+            return Err(RPCError::invalid_params("invalid verbosity level"));
+        };
+
+        result.ok_or_else(|| {
+            let message = format!(
+                "Chain Index says block #{} is {:#x}, but that block is not in the database",
+                number, block_hash
+            );
+            error!("{}", message);
+            RPCError::custom(RPCError::ChainIndexIsInconsistent, message)
+        })
     }
 
-    fn get_header(&self, hash: H256) -> Result<Option<HeaderView>> {
+    fn get_header(
+        &self,
+        hash: H256,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<HeaderView, Header>>> {
         let snapshot = self.shared.snapshot();
-
-        if !snapshot.is_main_chain(&hash.pack()) {
+        let block_hash = hash.pack();
+        if !snapshot.is_main_chain(&block_hash) {
             return Ok(None);
         }
 
-        Ok(snapshot.get_block_header(&hash.pack()).map(Into::into))
+        let verbosity = verbosity
+            .map(|v| v.value())
+            .unwrap_or(DEFAULT_HEADER_VERBOSITY_LEVEL);
+        if verbosity == 1 {
+            Ok(snapshot
+                .get_block_header(&block_hash)
+                .map(|header| ResponseFormat::Json(header.into())))
+        } else if verbosity == 0 {
+            Ok(snapshot
+                .get_packed_block_header(&block_hash)
+                .map(ResponseFormat::Hex))
+        } else {
+            Err(RPCError::invalid_params("invalid verbosity level"))
+        }
     }
 
-    fn get_header_by_number(&self, number: BlockNumber) -> Result<Option<HeaderView>> {
+    fn get_header_by_number(
+        &self,
+        number: BlockNumber,
+        verbosity: Option<Uint32>,
+    ) -> Result<Option<ResponseFormat<HeaderView, Header>>> {
         let snapshot = self.shared.snapshot();
-        Ok(snapshot
-            .get_block_hash(number.into())
-            .and_then(|hash| snapshot.get_block_header(&hash).map(Into::into)))
+        let block_hash = match snapshot.get_block_hash(number.into()) {
+            Some(block_hash) => block_hash,
+            None => return Ok(None),
+        };
+
+        let verbosity = verbosity
+            .map(|v| v.value())
+            .unwrap_or(DEFAULT_HEADER_VERBOSITY_LEVEL);
+        let result = if verbosity == 1 {
+            snapshot
+                .get_block_header(&block_hash)
+                .map(|header| Some(ResponseFormat::Json(header.into())))
+        } else if verbosity == 0 {
+            snapshot
+                .get_packed_block_header(&block_hash)
+                .map(|header| Some(ResponseFormat::Hex(header)))
+        } else {
+            return Err(RPCError::invalid_params("invalid verbosity level"));
+        };
+
+        result.ok_or_else(|| {
+            let message = format!(
+                "Chain Index says block #{} is {:#x}, but that block is not in the database",
+                number, block_hash
+            );
+            error!("{}", message);
+            RPCError::custom(RPCError::ChainIndexIsInconsistent, message)
+        })
     }
 
     fn get_transaction(&self, hash: H256) -> Result<Option<TransactionWithStatus>> {
@@ -142,7 +233,7 @@ impl ChainRpc for ChainRpcImpl {
             let fetch_tx_for_rpc = tx_pool.fetch_tx_for_rpc(id);
             if let Err(e) = fetch_tx_for_rpc {
                 error!("send fetch_tx_for_rpc request error {}", e);
-                return Err(Error::internal_error());
+                return Err(RPCError::ckb_internal_error(e));
             };
 
             fetch_tx_for_rpc.unwrap().map(|(proposed, tx)| {
@@ -172,8 +263,24 @@ impl ChainRpc for ChainRpcImpl {
             .map(|h| h.unpack()))
     }
 
-    fn get_tip_header(&self) -> Result<HeaderView> {
-        Ok(self.shared.snapshot().tip_header().clone().into())
+    fn get_tip_header(
+        &self,
+        verbosity: Option<Uint32>,
+    ) -> Result<ResponseFormat<HeaderView, Header>> {
+        let verbosity = verbosity
+            .map(|v| v.value())
+            .unwrap_or(DEFAULT_HEADER_VERBOSITY_LEVEL);
+        if verbosity == 1 {
+            Ok(ResponseFormat::Json(
+                self.shared.snapshot().tip_header().clone().into(),
+            ))
+        } else if verbosity == 0 {
+            Ok(ResponseFormat::Hex(
+                self.shared.snapshot().tip_header().data(),
+            ))
+        } else {
+            Err(RPCError::invalid_params("invalid verbosity level"))
+        }
     }
 
     fn get_current_epoch(&self) -> Result<EpochView> {
@@ -204,15 +311,16 @@ impl ChainRpc for ChainRpcImpl {
         let from = from.into();
         let to = to.into();
         if from > to {
-            return Err(RPCError::custom(
-                RPCError::Invalid,
-                "from greater than to".to_owned(),
-            ));
+            return Err(RPCError::invalid_params(format!(
+                "Expected from <= to in params[0], got from={:#x} to={:#x}",
+                from, to
+            )));
         } else if to - from > PAGE_SIZE {
-            return Err(RPCError::custom(
-                RPCError::Invalid,
-                "too large page size".to_owned(),
-            ));
+            return Err(RPCError::invalid_params(format!(
+                "Expected to - from <= {} in params[0], got {}",
+                PAGE_SIZE,
+                to - from,
+            )));
         }
 
         for block_number in from..=to {
@@ -222,11 +330,16 @@ impl ChainRpc for ChainRpcImpl {
             }
 
             let block_hash = block_hash.unwrap();
-            let block = snapshot
-                .get_block(&block_hash)
-                .ok_or_else(Error::internal_error)?;
+            let block = snapshot.get_block(&block_hash).ok_or_else(|| {
+                let message = format!(
+                    "Chain Index says block #{:#x} is {:#x}, but that block is not in the database",
+                    block_number, block_hash
+                );
+                error!("{}", message);
+                RPCError::custom(RPCError::ChainIndexIsInconsistent, message)
+            })?;
             for transaction in block.transactions() {
-                if let Some(transaction_meta) = snapshot.cell_set().get(&transaction.hash()) {
+                if let Some(transaction_meta) = snapshot.get_tx_meta(&transaction.hash()) {
                     for (i, output) in transaction.outputs().into_iter().enumerate() {
                         if output.calc_lock_hash() == lock_hash
                             && transaction_meta.is_dead(i) == Some(false)
@@ -264,7 +377,7 @@ impl ChainRpc for ChainRpcImpl {
     }
 
     fn get_tip_block_number(&self) -> Result<BlockNumber> {
-        self.get_tip_header().map(|h| h.inner.number)
+        Ok(self.shared.snapshot().tip_header().number().into())
     }
 
     fn get_cellbase_output_capacity_details(&self, hash: H256) -> Result<Option<BlockReward>> {

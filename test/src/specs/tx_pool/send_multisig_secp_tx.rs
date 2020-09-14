@@ -1,12 +1,12 @@
 use crate::utils::is_committed;
 use crate::{Net, Spec};
+use ckb_app_config::BlockAssemblerConfig;
 use ckb_app_config::CKBAppConfig;
 use ckb_chain_spec::{build_genesis_type_id_script, OUTPUT_INDEX_SECP256K1_BLAKE160_MULTISIG_ALL};
 use ckb_crypto::secp::{Generator, Privkey};
 use ckb_hash::{blake2b_256, new_blake2b};
 use ckb_jsonrpc_types::JsonBytes;
 use ckb_resource::CODE_HASH_SECP256K1_BLAKE160_MULTISIG_ALL;
-use ckb_tx_pool::BlockAssemblerConfig;
 use ckb_types::{
     bytes::Bytes,
     core::{capacity_bytes, Capacity, DepType, ScriptHashType, TransactionBuilder},
@@ -116,7 +116,7 @@ impl Spec for SendMultiSigSecpTxUseDepGroup {
         );
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig) -> ()> {
+    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
         let multi_sign_script = gen_multi_sign_script(&self.keys, self.keys.len() as u8, 0);
         let lock_arg = Bytes::from(blake160(&multi_sign_script).as_bytes().to_vec());
         let hash_type = self.hash_type;

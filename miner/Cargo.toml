@@ -1,24 +1,27 @@
 [package]
 name = "ckb-miner"
-version = "0.30.1-pre"
+version = "0.36.0-pre"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 
 [dependencies]
 ckb-logger = { path = "../util/logger" }
+ckb-app-config = { path = "../util/app-config" }
 ckb-types = { path = "../util/types" }
+ckb-channel = { path = "../util/channel" }
+ckb-hash = { path = "../util/hash" }
 ckb-pow = { path = "../pow" }
 rand = "0.6"
 serde = { version = "1.0", features = ["derive"] }
-crossbeam-channel = "0.3"
 serde_json = "1.0"
 ckb-jsonrpc-types = { path = "../util/jsonrpc-types" }
 hyper = "0.12"
+hyper-tls = "0.3"
 futures = "0.1"
 lru-cache = { git = "https://github.com/nervosnetwork/lru-cache", rev = "a35fdb8" }
 ckb-stop-handler = { path = "../util/stop-handler" }
 failure = "0.1.5"
-indicatif = "0.11"
+indicatif = "0.15"
 console = "0.8.0"
 eaglesong = "0.1"

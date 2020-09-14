@@ -1,6 +1,6 @@
 use crate::{utils::sleep, Net, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
 use ckb_app_config::CKBAppConfig;
-use ckb_tx_pool::FeeRate;
+use ckb_fee_estimator::FeeRate;
 use ckb_types::{
     packed::{CellInput, OutPoint},
     prelude::*,
@@ -40,20 +40,20 @@ impl Spec for TxsRelayOrder {
         for tx in txs.iter() {
             node0.rpc_client().send_transaction(tx.data().into());
         }
-        let tx_pool_info = node0.rpc_client().tx_pool_info();
+        let tx_pool_info = node0.get_tip_tx_pool_info();
         assert_eq!(COUNT as u64, tx_pool_info.pending.value());
         assert_eq!(0, tx_pool_info.orphan.value());
 
         // node1 should receive all txs
         sleep(10);
-        let tx_pool_info = node1.rpc_client().tx_pool_info();
+        let tx_pool_info = node1.get_tip_tx_pool_info();
         assert_eq!(
             COUNT as u64,
             tx_pool_info.pending.value() + tx_pool_info.orphan.value()
         );
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig) -> ()> {
+    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
         Box::new(|config| {
             config.tx_pool.min_fee_rate = FeeRate::from_u64(0);
         })

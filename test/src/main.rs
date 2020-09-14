@@ -1,3 +1,4 @@
+use ckb_channel::unbounded;
 use ckb_test::specs::*;
 use ckb_test::{
     utils::node_log,
@@ -7,7 +8,6 @@ use ckb_test::{
 use ckb_types::core::ScriptHashType;
 use ckb_util::Mutex;
 use clap::{value_t, App, Arg};
-use crossbeam_channel::unbounded;
 use log::{error, info};
 use rand::{seq::SliceRandom, thread_rng};
 use std::any::Any;
@@ -15,7 +15,7 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{read_to_string, File};
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
     let _ = {
-        let filter = ::std::env::var("CKB_LOG").unwrap_or_else(|_| "info".to_string());
+        let filter = env::var("CKB_LOG").unwrap_or_else(|_| "info".to_string());
         env_logger::builder().parse_filters(&filter).try_init()
     };
 
@@ -93,19 +93,23 @@ fn main() {
             }
         };
         match msg {
+            Notify::Start { spec_name } => {
+                info!("[{}] Start executing", spec_name);
+            }
             Notify::Error {
                 spec_error,
                 spec_name,
                 node_dirs,
             } => {
                 error_spec_names.push(spec_name.clone());
-                rerun_specs.push(spec_name);
+                rerun_specs.push(spec_name.clone());
                 if fail_fast {
                     workers.shutdown();
                     worker_running -= 1;
                 }
                 spec_errors.push(Some(spec_error));
                 if !quiet {
+                    info!("[{}] Error", spec_name);
                     tail_node_logs(node_dirs);
                 }
             }
@@ -114,20 +118,21 @@ fn main() {
                 node_dirs,
             } => {
                 error_spec_names.push(spec_name.clone());
-                rerun_specs.push(spec_name);
+                rerun_specs.push(spec_name.clone());
                 if fail_fast {
                     workers.shutdown();
                     worker_running -= 1;
                 }
                 spec_errors.push(None);
                 if !quiet {
+                    info!("[{}] Panic", spec_name);
                     print_panicked_logs(&node_dirs);
                 }
             }
             Notify::Done { spec_name, seconds } => {
                 done_specs += 1;
                 info!(
-                    "{}/{} .............. Done {} in {} seconds",
+                    "{}/{} .............. [{}] Done in {} seconds",
                     done_specs, total, spec_name, seconds
                 );
             }
@@ -156,7 +161,9 @@ fn main() {
     }
 
     if !spec_errors.is_empty() {
-        error!("ckb-failed on spec {}", error_spec_names.join(", "));
+        error!("ckb-test failed on spec {}", error_spec_names.join(", "));
+        log_failed_specs(&error_spec_names)
+            .unwrap_or_else(|err| error!("Failed to write integration failure reason: {}", err));
         info!("You can rerun remaining specs using following command:");
     } else {
         info!("You can run the skipped specs using following command:");
@@ -164,7 +171,7 @@ fn main() {
 
     info!(
         "{} --bin {} --port {} {}",
-        canonicalize_path(env::args().nth(0).unwrap_or_else(|| "ckb-test".to_string())).display(),
+        canonicalize_path(env::args().next().unwrap_or_else(|| "ckb-test".to_string())).display(),
         canonicalize_path(binary).display(),
         start_port,
         rerun_specs.join(" "),
@@ -250,7 +257,7 @@ fn filter_specs(mut all_specs: SpecMap, spec_names_to_run: Vec<&str>) -> Vec<Spe
 }
 
 fn current_dir() -> PathBuf {
-    ::std::env::current_dir()
+    env::current_dir()
         .expect("can't get current_dir")
         .join("vendor")
 }
@@ -290,6 +297,7 @@ fn all_specs() -> SpecMap {
         Box::new(DAOWithSatoshiCellOccupied),
         Box::new(SpendSatoshiCell::new()),
         Box::new(MiningBasic),
+        Box::new(BlockTemplates),
         Box::new(BootstrapCellbase),
         Box::new(TemplateSizeLimit),
         Box::new(PoolReconcile),
@@ -314,7 +322,6 @@ fn all_specs() -> SpecMap {
         Box::new(SendLargeCyclesTxToRelay::new()),
         Box::new(TxsRelayOrder),
         Box::new(SendArrowTxs),
-        Box::new(FeeEstimate),
         Box::new(DifferentTxsWithSameInput),
         Box::new(CompactBlockEmpty),
         Box::new(CompactBlockEmptyParentUnknown),
@@ -388,6 +395,11 @@ fn all_specs() -> SpecMap {
         Box::new(DAOVerify),
         Box::new(AvoidDuplicatedProposalsWithUncles),
         Box::new(TemplateTxSelect),
+        Box::new(BlockSyncRelayerCollaboration),
+        Box::new(RpcTruncate),
+        Box::new(SyncTooNewBlock),
+        Box::new(RelayTooNewBlock),
+        Box::new(LastCommonHeaderForPeerWithWorseChain),
     ];
     specs.into_iter().map(|spec| (spec.name(), spec)).collect()
 }
@@ -460,4 +472,19 @@ fn tail_node_logs(node_dirs: Vec<String>) {
             println!("{}", log);
         }
     }
+}
+
+fn log_failed_specs(error_spec_names: &[String]) -> Result<(), io::Error> {
+    let path = if let Ok(path) = env::var("CKB_INTEGRATION_FAILURE_FILE") {
+        path
+    } else {
+        return Ok(());
+    };
+
+    let mut f = File::create(&path)?;
+    for name in error_spec_names {
+        writeln!(&mut f, "ckb-test failed on spec {}", name)?;
+    }
+
+    Ok(())
 }

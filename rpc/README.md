@@ -47,9 +47,14 @@ Subscriptions require a full duplex connection. CKB offers such connections in t
     *   [`get_peers`](#get_peers)
     *   [`get_banned_addresses`](#get_banned_addresses)
     *   [`set_ban`](#set_ban)
+    *   [`sync_state`](#sync_state)
+    *   [`set_network_active`](#set_network_active)
+    *   [`add_node`](#add_node)
+    *   [`remove_node`](#remove_node)
 *   [`Pool`](#pool)
     *   [`send_transaction`](#send_transaction)
     *   [`tx_pool_info`](#tx_pool_info)
+    *   [`clear_tx_pool`](#clear_tx_pool)
 *   [`Stats`](#stats)
     *   [`get_blockchain_info`](#get_blockchain_info)
     *   [`get_peers_state`](#get_peers_state)
@@ -90,6 +95,9 @@ http://localhost:8114
 
 Returns the information about the tip header of the longest.
 
+#### Parameters
+
+* verbosity - 1 for a json object, 0 for hex encoded [Header](../util/types/schemas/blockchain.mol#L84) data, an optional parameter, default is 1
 
 #### Examples
 
@@ -164,7 +172,7 @@ Return the information corresponding the given epoch number.
 
 #### Parameters
 
-    epoch_number - Epoch number
+* epoch_number - Epoch number
 
 #### Examples
 
@@ -201,7 +209,7 @@ Returns the hash of a block in the best-block-chain by block number; block of No
 
 #### Parameters
 
-    block_number - Number of a block
+* block_number - Number of a block
 
 #### Examples
 
@@ -233,7 +241,8 @@ Returns the information about a block by hash.
 
 #### Parameters
 
-    hash - Hash of a block
+* hash - Hash of a block
+* verbosity - 2 for a json object, 0 for hex encoded [Block](../util/types/schemas/blockchain.mol#L94) data, an optional parameter, default is 2
 
 #### Examples
 
@@ -314,6 +323,10 @@ http://localhost:8114
 
 Returns the information about a block header by hash.
 
+#### Parameters
+
+* hash - Hash of a block
+* verbosity - 1 for a json object, 0 for hex encoded [Header](../util/types/schemas/blockchain.mol#L84) data, an optional parameter, default is 1
 
 #### Examples
 
@@ -356,6 +369,10 @@ http://localhost:8114
 
 Returns the information about a block header by block number.
 
+#### Parameters
+
+* block_number - Number of a block
+* verbosity - 1 for a json object, 0 for hex encoded [Header](../util/types/schemas/blockchain.mol#L84) data, an optional parameter, default is 1
 
 #### Examples
 
@@ -394,24 +411,25 @@ http://localhost:8114
 }
 ```
 
-### `get_cells_by_lock_hash`
+### ~~`get_cells_by_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Returns the information about live cells collection by the hash of lock script.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
-    from - Start block number
-    to - End block number
+* lock_hash - Cell lock script hash
+* from - Start block number
+* to - End block number
 #### Returns
 
-    block_hash - Refer to block
-    capacity - Cell capacity
-    cellbase - Cellbase or not
-    lock - Cell lock script
-    out_point - Refer to this output
-    output_data_len - Corresponding output data length
-    type - Cell type script
+* block_hash - Refer to block
+* capacity - Cell capacity
+* cellbase - Cellbase or not
+* lock - Cell lock script
+* out_point - Refer to this output
+* output_data_len - Corresponding output data length
+* type - Cell type script
 
 #### Examples
 
@@ -494,8 +512,8 @@ Returns the information about a cell by out_point if it is live. If second with_
 
 #### Parameters
 
-    out_point - OutPoint object {"tx_hash": <tx_hash>, "index": <index>}.
-    with_data - Boolean
+* out_point - OutPoint object {"tx_hash": <tx_hash>, "index": <index>}.
+* with_data - Boolean
 
 #### Examples
 
@@ -548,7 +566,7 @@ Returns the information about a transaction requested by transaction hash.
 
 #### Parameters
 
-    hash - Hash of a transaction
+* hash - Hash of a transaction
 
 #### Examples
 
@@ -625,7 +643,7 @@ Returns each component of the created CKB in this block's cellbase, which is iss
 
 #### Parameters
 
-    hash - Block hash
+* hash - Block hash
 
 #### Examples
 
@@ -663,17 +681,17 @@ Returns increased issuance, miner reward and total transaction fee of a block.
 
 #### Parameters
 
-    hash - Block hash
+* hash - Block hash
 #### Returns
 
-    finalized_at - The hash of the block which finalized
-    issuance::primary - Primary issuance in this block
-    issuance::secondary - Secondary issuance in this block
-    miner_reward::committed - Committed fee in miner reward
-    miner_reward::proposal - Proposal fee in miner reward
-    miner_reward::primary - Primary issuance in miner reward
-    miner_reward::secondary - Secondary issuance in miner reward
-    txs_fee - The total transaction fee of all transactions in the this block
+* finalized_at - The hash of the block which finalized
+* issuance::primary - Primary issuance in this block
+* issuance::secondary - Secondary issuance in this block
+* miner_reward::committed - Committed fee in miner reward
+* miner_reward::proposal - Proposal fee in miner reward
+* miner_reward::primary - Primary issuance in miner reward
+* miner_reward::secondary - Secondary issuance in miner reward
+* txs_fee - The total transaction fee of all transactions in the this block
 
 #### Examples
 
@@ -718,7 +736,8 @@ Get block by number
 
 #### Parameters
 
-    block_number - Number of a block
+* block_number - Number of a block
+* verbosity - 2 for a json object, 0 for hex encoded [Block](../util/types/schemas/blockchain.mol#L94) data, an optional parameter, default is 2
 
 #### Examples
 
@@ -878,13 +897,13 @@ Return the transaction hash
 
 #### Parameters
 
-    transaction - The transaction object
-    version - Transaction version
-    cell_deps - Cell dependencies
-    header_deps - Header dependencies
-    inputs - Transaction inputs
-    outputs - Transaction outputs
-    witnesses - Witnesses
+* transaction - The transaction object
+* version - Transaction version
+* cell_deps - Cell dependencies
+* header_deps - Header dependencies
+* inputs - Transaction inputs
+* outputs - Transaction outputs
+* witnesses - Witnesses
 
 #### Examples
 
@@ -954,8 +973,8 @@ Calculate the maximum withdraw one can get, given a referenced DAO cell, and a w
 
 #### Parameters
 
-    out_point - OutPoint object {"tx_hash": <tx_hash>, "index": <index>}.
-    withdraw_block_hash - Block hash
+* out_point - OutPoint object {"tx_hash": <tx_hash>, "index": <index>}.
+* withdraw_block_hash - Block hash
 
 #### Examples
 
@@ -1028,9 +1047,9 @@ Returns script hash of given transaction script
 
 #### Parameters
 
-    args - Hex encoded arguments passed to reference cell
-    code_hash - Code hash of referenced cell
-    hash_type - data: code_hash matches against dep cell data hash; type: code_hash matches against dep cell type hash.
+* args - Hex encoded arguments passed to reference cell
+* code_hash - Code hash of referenced cell
+* hash_type - data: code_hash matches against dep cell data hash; type: code_hash matches against dep cell type hash.
 
 #### Examples
 
@@ -1062,14 +1081,15 @@ http://localhost:8114
 
 ## Indexer
 
-### `index_lock_hash`
+### ~~`index_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Create index for live cells and transactions by the hash of lock script.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
-    index_from - Create an index from starting block number (exclusive), an optional parameter, null means starting from tip and 0 means starting from genesis
+* lock_hash - Cell lock script hash
+* index_from - Create an index from starting block number (exclusive), an optional parameter, null means starting from tip and 0 means starting from genesis
 
 #### Examples
 
@@ -1100,7 +1120,8 @@ http://localhost:8114
 }
 ```
 
-### `get_lock_hash_index_states`
+### ~~`get_lock_hash_index_states`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Get lock hash index states
 
@@ -1133,22 +1154,23 @@ http://localhost:8114
 }
 ```
 
-### `get_live_cells_by_lock_hash`
+### ~~`get_live_cells_by_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Returns the live cells collection by the hash of lock script.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
-    page - Page number, starts from 0
-    per - Page size, max value is 50
-    reverse_order - Returns the live cells collection in reverse order, an optional parameter, default is false
+* lock_hash - Cell lock script hash
+* page - Page number, starts from 0
+* per - Page size, max value is 50
+* reverse_order - Returns the live cells collection in reverse order, an optional parameter, default is false
 #### Returns
 
-    cell_output - Cell output struct
-    cellbase - Cellbase or not
-    created_by - Refer to the transaction which creates this cell output
-    output_data_len - Corresponding output data length
+* cell_output - Cell output struct
+* cellbase - Cellbase or not
+* created_by - Refer to the transaction which creates this cell output
+* output_data_len - Corresponding output data length
 
 #### Examples
 
@@ -1429,16 +1451,17 @@ http://localhost:8114
 }
 ```
 
-### `get_transactions_by_lock_hash`
+### ~~`get_transactions_by_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Returns the transactions collection by the hash of lock script. Returns empty array when the `lock_hash` has not been indexed yet.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
-    page - Page number, starts from 0
-    per - Page size, max value is 50
-    reverse_order - Return the transactions collection in reverse order, an optional parameter, default is false
+* lock_hash - Cell lock script hash
+* page - Page number, starts from 0
+* per - Page size, max value is 50
+* reverse_order - Return the transactions collection in reverse order, an optional parameter, default is false
 
 #### Examples
 
@@ -1579,18 +1602,19 @@ http://localhost:8114
 }
 ```
 
-### `get_capacity_by_lock_hash`
+### ~~`get_capacity_by_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Returns the total capacity by the hash of lock script.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
+* lock_hash - Cell lock script hash
 #### Returns
 
-    capacity - Total capacity
-    cells_count - Total cells
-    block_number - At which block capacity was calculated
+* capacity - Total capacity
+* cells_count - Total cells
+* block_number - At which block capacity was calculated
 
 #### Examples
 
@@ -1620,13 +1644,14 @@ http://localhost:8114
 }
 ```
 
-### `deindex_lock_hash`
+### ~~`deindex_lock_hash`~~
+**DEPRECATED** This method is deprecated since version 0.36.0 for reasons of flexibility, please use [ckb-indexer](https://github.com/nervosnetwork/ckb-indexer) as an alternate solution
 
 Remove index for live cells and transactions by the hash of lock script.
 
 #### Parameters
 
-    lock_hash - Cell lock script hash
+* lock_hash - Cell lock script hash
 
 #### Examples
 
@@ -1660,9 +1685,9 @@ Returns data needed to construct a block to work on
 
 #### Parameters
 
-    bytes_limit - optional number, specify the max bytes of block
-    proposals_limit - optional number, specify the max proposals of block
-    max_version - optional number, specify the max block version
+* bytes_limit - optional number, specify the max bytes of block
+* proposals_limit - optional number, specify the max proposals of block
+* max_version - optional number, specify the max block version
 
 #### Examples
 
@@ -1753,8 +1778,8 @@ Submit new block to network
 
 #### Parameters
 
-    work_id - the identifier to proof-of-work
-    block - new block
+* work_id - the identifier to proof-of-work
+* block - new block
 
 #### Examples
 
@@ -1836,6 +1861,15 @@ http://localhost:8114
 
 Returns the local node information.
 
+#### Returns
+
+* active - Whether p2p networking is enabled
+* addresses - The addresses of node listen to
+* connections - The number of connections
+* node_id - The id of node
+* protocols::id - Supported p2p protocol id
+* protocols::name - Supported p2p protocol name
+* protocols::support_versions - Supported p2p protocol versions
 
 #### Examples
 
@@ -1856,6 +1890,7 @@ http://localhost:8114
     "id": 2,
     "jsonrpc": "2.0",
     "result": {
+        "active": true,
         "addresses": [
             {
                 "address": "/ip4/192.168.0.2/tcp/8112/p2p/QmTRHCdrRtgUzYLNCin69zEvPvLYdxUZLLfLYyHVY3DZAS",
@@ -1866,9 +1901,25 @@ http://localhost:8114
                 "score": "0x1"
             }
         ],
-        "is_outbound": null,
+        "connections": "0xb",
         "node_id": "QmTRHCdrRtgUzYLNCin69zEvPvLYdxUZLLfLYyHVY3DZAS",
-        "version": "0.0.0"
+        "protocols": [
+            {
+                "id": "0x0",
+                "name": "/ckb/ping",
+                "support_versions": [
+                    "0.0.1"
+                ]
+            },
+            {
+                "id": "0x1",
+                "name": "/ckb/discovery",
+                "support_versions": [
+                    "0.0.1"
+                ]
+            }
+        ],
+        "version": "0.34.0 (f37f598 2020-07-17)"
     }
 }
 ```
@@ -1877,6 +1928,22 @@ http://localhost:8114
 
 Returns the connected peers information.
 
+#### Returns
+
+* addresses - Observed remote peer listening address
+* connected_duration - The connection duration in seconds
+* is_outbound - Outbound or inbound peer
+* last_ping_duration - Last ping duration in milliseconds
+* node_id - The id of remote peer
+* protocols - Opened protocols of remote peer
+* sync_state::best_known_header_hash - Best known header hash of remote peer
+* sync_state::best_known_header_number - Best known header number of remote peer
+* sync_state::last_common_header_hash - Last common header hash of remote peer
+* sync_state::last_common_header_number - Last common header number of remote peer
+* sync_state::unknown_header_list_size - The total size of unknown header list
+* sync_state::inflight_count - The count of concurrency downloading blocks
+* sync_state::can_fetch_count - The count of blocks are available for concurrency download
+* version - The peer version
 
 #### Examples
 
@@ -1900,29 +1967,118 @@ http://localhost:8114
         {
             "addresses": [
                 {
-                    "address": "/ip4/192.168.0.3/tcp/8115",
-                    "score": "0x1"
+                    "address": "/ip6/::ffff:18.185.102.19/tcp/8115/p2p/QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+                    "score": "0x64"
+                },
+                {
+                    "address": "/ip4/18.185.102.19/tcp/8115/p2p/QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+                    "score": "0x64"
                 }
             ],
+            "connected_duration": "0x2f",
             "is_outbound": true,
-            "node_id": "QmaaaLB4uPyDpZwTQGhV63zuYrKm4reyN2tF1j2ain4oE7",
-            "version": "unknown"
+            "last_ping_duration": "0x1a",
+            "node_id": "QmXwUgF48ULy6hkgfqrEwEfuHW7WyWyWauueRDAYQHNDfN",
+            "protocols": [
+                {
+                    "id": "0x4",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x2",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x1",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x64",
+                    "version": "1"
+                },
+                {
+                    "id": "0x6e",
+                    "version": "1"
+                },
+                {
+                    "id": "0x66",
+                    "version": "1"
+                },
+                {
+                    "id": "0x65",
+                    "version": "1"
+                },
+                {
+                    "id": "0x0",
+                    "version": "0.0.1"
+                }
+            ],
+            "sync_state": {
+                "best_known_header_hash": null,
+                "best_known_header_number": null,
+                "can_fetch_count": "0x80",
+                "inflight_count": "0xa",
+                "last_common_header_hash": null,
+                "last_common_header_number": null,
+                "unknown_header_list_size": "0x20"
+            },
+            "version": "0.34.0 (f37f598 2020-07-17)"
         },
         {
             "addresses": [
                 {
-                    "address": "/ip4/192.168.0.4/tcp/8113",
-                    "score": "0xff"
+                    "address": "/ip4/174.80.182.60/tcp/52965/p2p/QmVTMd7SEXfxS5p4EEM5ykTe1DwWWVewEM3NwjLY242vr2",
+                    "score": "0x1"
                 }
             ],
-            "is_outbound": false,
-            "node_id": "QmRuGcpVC3vE7aEoB6fhUdq9uzdHbyweCnn1sDBSjfmcbM",
-            "version": "unknown"
-        },
-        {
-            "addresses": [],
-            "node_id": "QmUddxwRqgTmT6tFujXbYPMLGLAE2Tciyv6uHGfdYFyDVa",
-            "version": "unknown"
+            "connected_duration": "0x95",
+            "is_outbound": true,
+            "last_ping_duration": "0x41",
+            "node_id": "QmSrkzhdBMmfCGx8tQGwgXxzBg8kLtX8qMcqECMuKWsxDV",
+            "protocols": [
+                {
+                    "id": "0x0",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x2",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x6e",
+                    "version": "1"
+                },
+                {
+                    "id": "0x66",
+                    "version": "1"
+                },
+                {
+                    "id": "0x1",
+                    "version": "0.0.1"
+                },
+                {
+                    "id": "0x65",
+                    "version": "1"
+                },
+                {
+                    "id": "0x64",
+                    "version": "1"
+                },
+                {
+                    "id": "0x4",
+                    "version": "0.0.1"
+                }
+            ],
+            "sync_state": {
+                "best_known_header_hash": "0x2157c72b3eddd41a7a14c361173cd22ef27d7e0a29eda2e511ee0b3598c0b895",
+                "best_known_header_number": "0xdb835",
+                "can_fetch_count": "0x80",
+                "inflight_count": "0xa",
+                "last_common_header_hash": "0xc63026bd881d880bb142c855dc8153187543245f0a94391c831c75df31f263c4",
+                "last_common_header_number": "0x4dc08",
+                "unknown_header_list_size": "0x1f"
+            },
+            "version": "0.30.1 (5cc1b75 2020-03-23)"
         }
     ]
 }
@@ -1968,11 +2124,11 @@ Insert or delete an IP/Subnet from the banned list
 
 #### Parameters
 
-    address - The IP/Subnet with an optional netmask (default is /32 = single IP)
-    command - `insert` to insert an IP/Subnet to the list, `delete` to delete an IP/Subnet from the list
-    ban_time - Time in milliseconds how long (or until when if [absolute] is set) the IP is banned, optional parameter, null means using the default time of 24h
-    absolute - If set, the `ban_time` must be an absolute timestamp in milliseconds since epoch, optional parameter
-    reason - Ban reason, optional parameter
+* address - The IP/Subnet with an optional netmask (default is /32 = single IP)
+* command - `insert` to insert an IP/Subnet to the list, `delete` to delete an IP/Subnet from the list
+* ban_time - Time in milliseconds how long (or until when if [absolute] is set) the IP is banned, optional parameter, null means using the default time of 24h
+* absolute - If set, the `ban_time` must be an absolute timestamp in milliseconds since epoch, optional parameter
+* reason - Ban reason, optional parameter
 
 #### Examples
 
@@ -2002,6 +2158,150 @@ http://localhost:8114
 }
 ```
 
+### `sync_state`
+
+Returns sync state of this node
+
+#### Returns
+
+* best_known_block_number - Height of the most difficult header observed across the network
+* best_known_block_timestamp - Timestamp of the most difficult header observed across the network
+* ibd - Whether the node is in IBD status, i.e. whether the local data is within one day of the latest
+* inflight_blocks_count - Number of blocks being requested for download
+* orphan_blocks_count - Number of blocks that have been downloaded but can't find the corresponding parents yet
+* fast_time - The download scheduler's time analysis data, the fast is the 1/3 of the cut-off point, unit ms
+* normal_time - The download scheduler's time analysis data, the normal is the 4/5 of the cut-off point, unit ms
+* low_time - The download scheduler's time analysis data, the low is the 9/10 of the cut-off point, unit ms
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "sync_state",
+    "params": []
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": {
+        "best_known_block_number": "0x248623",
+        "best_known_block_timestamp": "0x173943c36e4",
+        "fast_time": "0x3e8",
+        "ibd": false,
+        "inflight_blocks_count": "0x0",
+        "low_time": "0x5dc",
+        "normal_time": "0x4e2",
+        "orphan_blocks_count": "0x0"
+    }
+}
+```
+
+### `set_network_active`
+
+Disable/enable all p2p network activity
+
+#### Parameters
+
+* state - true to enable networking, false to disable
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "set_network_active",
+    "params": [
+        false
+    ]
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": null
+}
+```
+
+### `add_node`
+
+Attempts to add a node to the peers list and try connecting to it.
+
+#### Parameters
+
+* peer_id - The peer id of node
+* address - The address of node
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "add_node",
+    "params": [
+        "QmUsZHPbjjzU627UZFt4k8j6ycEcNvXRnVGxCPKqwbAfQS",
+        "/ip4/192.168.2.100/tcp/8114"
+    ]
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": null
+}
+```
+
+### `remove_node`
+
+Attempts to remove a node from the peers list and try disconnecting from it.
+
+#### Parameters
+
+* peer_id - The peer id of node
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "remove_node",
+    "params": [
+        "QmUsZHPbjjzU627UZFt4k8j6ycEcNvXRnVGxCPKqwbAfQS"
+    ]
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": null
+}
+```
+
 ## Pool
 
 ### `send_transaction`
@@ -2010,8 +2310,8 @@ Send new transaction into transaction pool.
 
 #### Parameters
 
-    transaction - The transaction object, struct reference: https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0019-data-structures/0019-data-structures.md#Transaction
-    outputs_validator - Validates the transaction outputs before entering the tx-pool, an optional string parameter (enum: default | passthrough ), null means passthrough. The deafult validator requires each output use the standard lock and type scripts, passthrough means skipping the validation.
+* transaction - The transaction object, struct reference: https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0019-data-structures/0019-data-structures.md#Transaction
+* outputs_validator - Validates the transaction outputs before entering the tx-pool, an optional string parameter (enum: default | passthrough ), null means passthrough. The deafult validator requires each output use the standard lock and type scripts, passthrough means skipping the validation.
 
 #### Examples
 
@@ -2105,9 +2405,38 @@ http://localhost:8114
         "orphan": "0x0",
         "pending": "0x1",
         "proposed": "0x0",
+        "tip_hash": "0xa5f5c85987a15de25661e5a214f2c1449cd803f071acc7999820f25246471f40",
+        "tip_number": "0x400",
         "total_tx_cycles": "0x219",
         "total_tx_size": "0x112"
     }
+}
+```
+
+### `clear_tx_pool`
+
+Remove all transactions from the tx-pool
+
+
+#### Examples
+
+```bash
+echo '{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "clear_tx_pool",
+    "params": []
+}' \
+| tr -d '\n' \
+| curl -H 'content-type: application/json' -d @- \
+http://localhost:8114
+```
+
+```json
+{
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": null
 }
 ```
 
@@ -2195,10 +2524,10 @@ Subscribe to a topic, if successful it returns the subscription id. For each eve
 
 #### Parameters
 
-    topic - Subscription topic (enum: new_tip_header | new_tip_block)
+* topic - Subscription topic (enum: new_tip_header | new_tip_block)
 #### Returns
 
-    id - Subscription id
+* id - Subscription id
 
 #### Examples
 
@@ -2230,10 +2559,10 @@ unsubscribe from a subscribed topic
 
 #### Parameters
 
-    id - Subscription id
+* id - Subscription id
 #### Returns
 
-    result - Unsubscribe result
+* result - Unsubscribe result
 
 #### Examples
 

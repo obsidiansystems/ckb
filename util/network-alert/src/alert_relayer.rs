@@ -6,10 +6,10 @@
 //! A cli to generate alert message,
 //! A config option to set alert messages to broard cast.
 //
-use crate::config::SignatureConfig;
 use crate::notifier::Notifier;
 use crate::verifier::Verifier;
 use crate::BAD_MESSAGE_BAN_TIME;
+use ckb_app_config::NetworkAlertConfig;
 use ckb_logger::{debug, info, trace};
 use ckb_network::{bytes::Bytes, CKBProtocolContext, CKBProtocolHandler, PeerIndex, TargetSession};
 use ckb_notify::NotifyController;
@@ -34,7 +34,7 @@ impl AlertRelayer {
     pub fn new(
         client_version: String,
         notify_controller: NotifyController,
-        signature_config: SignatureConfig,
+        signature_config: NetworkAlertConfig,
     ) -> Self {
         AlertRelayer {
             notifier: Arc::new(Mutex::new(Notifier::new(client_version, notify_controller))),
@@ -83,7 +83,7 @@ impl CKBProtocolHandler for AlertRelayer {
         for alert in self.notifier.lock().received_alerts() {
             let alert_id: u32 = alert.as_reader().raw().id().unpack();
             trace!("send alert {} to peer {}", alert_id, peer_index);
-            if let Err(err) = nc.quick_send_message_to(peer_index, alert.as_slice().into()) {
+            if let Err(err) = nc.quick_send_message_to(peer_index, alert.as_bytes()) {
                 debug!("alert_relayer send alert when connected error: {:?}", err);
             }
         }

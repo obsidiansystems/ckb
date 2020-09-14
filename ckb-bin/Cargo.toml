@@ -1,6 +1,6 @@
 [package]
 name = "ckb-bin"
-version = "0.30.1-pre"
+version = "0.36.0-pre"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -10,11 +10,13 @@ clap = { version = "2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_plain = "0.3.0"
 toml = "0.5"
-crossbeam-channel = "0.3"
 ckb-app-config = { path = "../util/app-config" }
 ckb-logger = { path = "../util/logger" }
+ckb-logger-service = { path = "../util/logger-service" }
+ckb-metrics-service = { path = "../util/metrics-service" }
 ckb-util = { path = "../util" }
 ckb-types = { path = "../util/types" }
+ckb-channel = { path = "../util/channel" }
 ckb-jsonrpc-types = { path = "../util/jsonrpc-types" }
 ckb-chain = { path = "../chain" }
 ckb-shared = { path = "../shared" }
@@ -29,9 +31,14 @@ ctrlc = { version = "3.1", features = ["termination"] }
 ckb-sync = { path = "../sync"}
 ckb-instrument = { path = "../util/instrument", features = ["progress_bar"] }
 ckb-build-info = { path = "../util/build-info" }
+ckb-memory-tracker = { path = "../util/memory-tracker" }
+ckb-chain-iter = { path = "../util/chain-iter" }
 ckb-verification = { path = "../verification" }
 base64 = "0.10.1"
-
+tempfile = "3.0"
+rayon = "1.0"
+sentry = "0.17.0"
 
 [features]
 deadlock_detection = ["ckb-util/deadlock_detection"]
+profiling = ["ckb-memory-tracker/profiling"]

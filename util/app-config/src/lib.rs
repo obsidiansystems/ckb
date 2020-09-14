@@ -1,36 +1,27 @@
 mod app_config;
 mod args;
 pub mod cli;
+mod configs;
 mod exit_code;
 mod sentry_config;
 
 pub use app_config::{AppConfig, CKBAppConfig, MinerAppConfig};
 pub use args::{
-    ExportArgs, ImportArgs, InitArgs, MinerArgs, ProfArgs, ResetDataArgs, RunArgs, StatsArgs,
+    ExportArgs, ImportArgs, InitArgs, MinerArgs, PeerIDArgs, ReplayArgs, ResetDataArgs, RunArgs,
+    StatsArgs,
 };
-pub use ckb_tx_pool::BlockAssemblerConfig;
+pub use configs::*;
 pub use exit_code::ExitCode;
 
-use ckb_build_info::Version;
 use ckb_chain_spec::{consensus::Consensus, ChainSpec};
 use ckb_jsonrpc_types::ScriptHashType;
-use ckb_logger::{info_target, LoggerInitGuard};
 use clap::{value_t, ArgMatches, ErrorKind};
 use std::path::PathBuf;
 
-pub(crate) const LOG_TARGET_SENTRY: &str = "sentry";
-
 pub struct Setup {
-    subcommand_name: String,
-    config: AppConfig,
-    is_sentry_enabled: bool,
-}
-
-pub struct SetupGuard {
-    #[allow(dead_code)]
-    logger_guard: LoggerInitGuard,
-    #[allow(dead_code)]
-    sentry_guard: Option<sentry::internals::ClientInitGuard>,
+    pub subcommand_name: String,
+    pub config: AppConfig,
+    pub is_sentry_enabled: bool,
 }
 
 impl Setup {
@@ -54,46 +45,6 @@ impl Setup {
         })
     }
 
-    pub fn setup_app(&self, version: &Version) -> Result<SetupGuard, ExitCode> {
-        // Initialization of logger must do before sentry, since `logger::init()` and
-        // `sentry_config::init()` both registers custom panic hooks, but `logger::init()`
-        // replaces all hooks previously registered.
-        let mut logger_config = self.config.logger().to_owned();
-        if logger_config.emit_sentry_breadcrumbs.is_none() {
-            logger_config.emit_sentry_breadcrumbs = Some(self.is_sentry_enabled);
-        }
-        let logger_guard = ckb_logger::init(logger_config)?;
-
-        let sentry_guard = if self.is_sentry_enabled {
-            let sentry_config = self.config.sentry();
-
-            info_target!(
-                crate::LOG_TARGET_SENTRY,
-                "**Notice**: \
-                 The ckb process will send stack trace to sentry on Rust panics. \
-                 This is enabled by default before mainnet, which can be opted out by setting \
-                 the option `dsn` to empty in the config file. The DSN is now {}",
-                sentry_config.dsn
-            );
-
-            let guard = sentry_config.init(&version);
-
-            sentry::configure_scope(|scope| {
-                scope.set_tag("subcommand", &self.subcommand_name);
-            });
-
-            Some(guard)
-        } else {
-            info_target!(crate::LOG_TARGET_SENTRY, "sentry is disabled");
-            None
-        };
-
-        Ok(SetupGuard {
-            logger_guard,
-            sentry_guard,
-        })
-    }
-
     pub fn run<'m>(self, matches: &ArgMatches<'m>) -> Result<RunArgs, ExitCode> {
         let consensus = self.consensus()?;
         let config = self.config.into_ckb()?;
@@ -105,50 +56,56 @@ impl Setup {
         })
     }
 
-    pub fn miner(self) -> Result<MinerArgs, ExitCode> {
+    pub fn miner<'m>(self, matches: &ArgMatches<'m>) -> Result<MinerArgs, ExitCode> {
         let spec = self.chain_spec()?;
+        let memory_tracker = self.config.memory_tracker().to_owned();
         let config = self.config.into_miner()?;
         let pow_engine = spec.pow_engine();
+        let limit = match value_t!(matches, cli::ARG_LIMIT, u128) {
+            Ok(l) => l,
+            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => 0,
+            Err(e) => {
+                return Err(e.into());
+            }
+        };
 
         Ok(MinerArgs {
             pow_engine,
             config: config.miner,
+            memory_tracker,
+            limit,
         })
     }
 
-    pub fn prof<'m>(self, matches: &ArgMatches<'m>) -> Result<ProfArgs, ExitCode> {
+    pub fn replay<'m>(self, matches: &ArgMatches<'m>) -> Result<ReplayArgs, ExitCode> {
         let consensus = self.consensus()?;
         let config = self.config.into_ckb()?;
-        let from = value_t!(matches, cli::ARG_FROM, u64)?;
-        let to = value_t!(matches, cli::ARG_TO, u64)?;
-
-        Ok(ProfArgs {
+        let tmp_target = value_t!(matches, cli::ARG_TMP_TARGET, PathBuf)?;
+        let profile = if matches.is_present(cli::ARG_PROFILE) {
+            let from = option_value_t!(matches, cli::ARG_FROM, u64)?;
+            let to = option_value_t!(matches, cli::ARG_TO, u64)?;
+            Some((from, to))
+        } else {
+            None
+        };
+        let sanity_check = matches.is_present(cli::ARG_SANITY_CHECK);
+        let full_verfication = matches.is_present(cli::ARG_FULL_VERFICATION);
+        Ok(ReplayArgs {
             config,
             consensus,
-            from,
-            to,
+            tmp_target,
+            profile,
+            sanity_check,
+            full_verfication,
         })
     }
 
     pub fn stats<'m>(self, matches: &ArgMatches<'m>) -> Result<StatsArgs, ExitCode> {
         let consensus = self.consensus()?;
         let config = self.config.into_ckb()?;
-        // There are two types of errors,
-        // parse failures and those where the argument wasn't present
-        let from = match value_t!(matches, cli::ARG_FROM, u64) {
-            Ok(from) => Some(from),
-            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => None,
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
-        let to = match value_t!(matches, cli::ARG_TO, u64) {
-            Ok(to) => Some(to),
-            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => None,
-            Err(e) => {
-                return Err(e.into());
-            }
-        };
+
+        let from = option_value_t!(matches, cli::ARG_FROM, u64)?;
+        let to = option_value_t!(matches, cli::ARG_TO, u64)?;
 
         Ok(StatsArgs {
             config,
@@ -255,10 +212,7 @@ impl Setup {
         let network_dir = network_config.path.clone();
         let network_peer_store_path = network_config.peer_store_path();
         let network_secret_key_path = network_config.secret_key_path();
-        let logs_dir = config
-            .logger
-            .file
-            .and_then(|path| path.parent().map(|dir| dir.to_path_buf()));
+        let logs_dir = Some(config.logger.log_dir);
 
         let force = matches.is_present(cli::ARG_FORCE);
         let all = matches.is_present(cli::ARG_ALL);
@@ -311,7 +265,7 @@ impl Setup {
         result
     }
 
-    fn consensus(&self) -> Result<Consensus, ExitCode> {
+    pub fn consensus(&self) -> Result<Consensus, ExitCode> {
         let result = consensus_from_spec(&self.chain_spec()?);
 
         if let Ok(consensus) = &result {
@@ -324,6 +278,39 @@ impl Setup {
 
         result
     }
+
+    pub fn peer_id<'m>(matches: &ArgMatches<'m>) -> Result<PeerIDArgs, ExitCode> {
+        let path = matches.value_of(cli::ARG_SECRET_PATH).unwrap();
+        match read_secret_key(path.into()) {
+            Ok(Some(key)) => Ok(PeerIDArgs {
+                peer_id: key.peer_id(),
+            }),
+            Err(_) => Err(ExitCode::Failure),
+            Ok(None) => Err(ExitCode::IO),
+        }
+    }
+
+    pub fn gen<'m>(matches: &ArgMatches<'m>) -> Result<(), ExitCode> {
+        let path = matches.value_of(cli::ARG_SECRET_PATH).unwrap();
+        configs::write_secret_to_file(&configs::generate_random_key(), path.into())
+            .map_err(|_| ExitCode::IO)
+    }
+}
+
+// There are two types of errors,
+// parse failures and those where the argument wasn't present
+#[macro_export]
+macro_rules! option_value_t {
+    ($m:ident, $v:expr, $t:ty) => {
+        option_value_t!($m.value_of($v), $t)
+    };
+    ($m:ident.value_of($v:expr), $t:ty) => {
+        match value_t!($m.value_of($v), $t) {
+            Ok(from) => Ok(Some(from)),
+            Err(ref e) if e.kind == ErrorKind::ArgumentNotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
 }
 
 fn is_daemon(subcommand_name: &str) -> bool {

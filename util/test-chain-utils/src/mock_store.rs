@@ -51,10 +51,19 @@ impl MockStore {
             .unwrap();
         db_txn.commit().unwrap();
     }
+
+    pub fn remove_block(&self, block: &BlockView) {
+        let db_txn = self.0.begin_transaction();
+        db_txn
+            .delete_block(&block.header().hash(), block.transactions().len())
+            .unwrap();
+        db_txn.detach_block(&block).unwrap();
+        db_txn.commit().unwrap();
+    }
 }
 
 impl CellProvider for MockStore {
-    fn cell(&self, out_point: &OutPoint, _with_data: bool) -> CellStatus {
+    fn cell(&self, out_point: &OutPoint, with_data: bool) -> CellStatus {
         match self.0.get_transaction(&out_point.tx_hash()) {
             Some((tx, _)) => tx
                 .outputs()
@@ -64,11 +73,15 @@ impl CellProvider for MockStore {
                         .outputs_data()
                         .get(out_point.index().unpack())
                         .expect("output data");
-                    CellStatus::live_cell(
-                        CellMetaBuilder::from_cell_output(cell, data.unpack())
-                            .out_point(out_point.to_owned())
-                            .build(),
-                    )
+
+                    let mut cell_meta = CellMetaBuilder::from_cell_output(cell, data.unpack())
+                        .out_point(out_point.to_owned())
+                        .build();
+                    if !with_data {
+                        cell_meta.mem_cell_data = None;
+                    }
+
+                    CellStatus::live_cell(cell_meta)
                 })
                 .unwrap_or(CellStatus::Unknown),
             None => CellStatus::Unknown,
