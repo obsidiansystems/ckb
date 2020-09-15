@@ -1,24 +1,30 @@
-{ pkgs ? import (builtins.fetchTarball { # 2020-02-13 (nixos-19.09)
-    url = "https://github.com/NixOS/nixpkgs/archive/e02fb6eaf70d4f6db37ce053edf79b731f13c838.tar.gz";
-    sha256 = "1dbjbak57vl7kcgpm1y1nm4s74gjfzpfgk33xskdxj9hjphi6mws";
-  }) {}
-, rustChannelOf ? (import ("${builtins.fetchTarball { # 2020-02-07
-    url = "https://github.com/mozilla/nixpkgs-mozilla/archive/969a1e467abbb91affbf0c24ddf773d2bdf70ccd.tar.gz";
-    sha256 = "13j54pzd9sfyimcmzl0hahzhvr930kiqj839nyk7yxp3nr0zy2xx";
-  }}/rust-overlay.nix") pkgs pkgs).rustChannelOf
+{ pkgsFun ? import (import ./nix/nixpkgs/thunk.nix)
+
+, rustOverlay ? import "${import ./nix/nixpkgs-mozilla/thunk.nix}/rust-overlay.nix"
 
 # Rust manifest hash must be updated when rust-toolchain file changes.
-, rustPackages ? rustChannelOf { # channel-rust-1.41.0.toml
-    dist_root = "https://static.rust-lang.org/dist";
+, rustPackages ? pkgs.rustChannelOf {
+    date = "2020-05-04";
     rustToolchain = ./rust-toolchain;
     sha256 = "0yvh2ck2vqas164yh01ggj4ckznx04blz3jgbkickfgjm18y269j";
-  } }:
+  }
+
+, pkgs ? pkgsFun {
+    overlays = [
+      rustOverlay
+    ];
+  }
+
+, gitignoreNix ? import ./nix/gitignore.nix/thunk.nix
+
+}:
+
 let
   rustPlatform = pkgs.makeRustPlatform {
     inherit (rustPackages) cargo;
     rustc = rustPackages.rust;
   };
-  inherit (import ./nix/gitignore.nix { inherit (pkgs) lib; }) gitignoreSource;
+  inherit (import gitignoreNix { inherit (pkgs) lib; }) gitignoreSource;
 in rustPlatform.buildRustPackage {
   name = "ckb";
   src = gitignoreSource ./.;
@@ -27,5 +33,5 @@ in rustPlatform.buildRustPackage {
   verifyCargoDeps = true;
 
   # Cargo hash must be updated when Cargo.lock file changes.
-  cargoSha256 = "0vg7alicwwzf85j6vxkzm3zngvmyzzsxjclcm4gdsn0vfib4r0mv";
+  cargoSha256 = "1yjys31qvs3r0glb3jwvm4rsffdzzkaqy0wbp2cf6zrcza2m7gf4";
 }
