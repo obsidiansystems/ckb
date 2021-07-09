@@ -1,30 +1,29 @@
 use crate::generic::{GetCommitTxIds, GetProposalTxIds};
+use crate::util::cell::gen_spendable;
+use crate::util::mining::mine;
+use crate::util::transaction::always_success_transaction;
 use crate::DEFAULT_TX_PROPOSAL_WINDOW;
-use crate::{Net, Spec};
+use crate::{Node, Spec};
 use ckb_jsonrpc_types::BlockTemplate;
-use ckb_types::{core::BlockView, prelude::*};
-use std::convert::Into;
+use ckb_types::prelude::*;
 
 pub struct MiningBasic;
 
 impl Spec for MiningBasic {
-    crate::name!("mining_basic");
-
     // Basic life cycle of transactions:
     //     1. Submit transaction 'tx' into transactions_pool after height i
     //     2. Expect tx will be included in block[i+1] proposal zone;
     //     3. Expect tx will be included in block[i + 1 + proposal_window.closest]
     //        commit zone.
 
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
-        node.generate_blocks_until_contains_valid_cellbase();
-
-        let transaction = node.new_transaction_spend_tip_cellbase();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
+        let cells = gen_spendable(node, 1);
+        let transaction = always_success_transaction(node, &cells[0]);
         node.submit_transaction(&transaction);
 
-        let block1_hash = node.generate_block();
-        let block1: BlockView = node.rpc_client().get_block(block1_hash).unwrap().into();
+        mine(&node, 1);
+        let block1 = node.get_tip_block();
 
         assert_eq!(
             block1.get_proposal_tx_ids(),
@@ -32,12 +31,8 @@ impl Spec for MiningBasic {
         );
 
         // skip (proposal_window.closest - 1) block
-        (0..DEFAULT_TX_PROPOSAL_WINDOW.0 - 1).for_each(|_| {
-            node.generate_block();
-        });
-
-        let block3_hash = node.generate_block();
-        let block3: BlockView = node.rpc_client().get_block(block3_hash).unwrap().into();
+        mine(&node, DEFAULT_TX_PROPOSAL_WINDOW.0);
+        let block3 = node.get_tip_block();
 
         assert_eq!(block3.get_commit_tx_ids(), transaction.get_commit_tx_ids());
     }
@@ -46,14 +41,12 @@ impl Spec for MiningBasic {
 pub struct BlockTemplates;
 
 impl Spec for BlockTemplates {
-    crate::name!("block_template");
-
     // Block template:
     //    1. Tip block hash should be parent_hash in block template;
     //    2. Block template should be updated if tip block updated.
 
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
         let rpc_client = node.rpc_client();
 
         let is_block_template_equal = |template1: &BlockTemplate, template2: &BlockTemplate| {

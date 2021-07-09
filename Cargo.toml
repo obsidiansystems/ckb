@@ -1,74 +1,90 @@
 [package]
 name = "ckb"
-version = "0.36.0-pre"
+version = "0.43.0"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 build = "build.rs"
+description = "CKB is the layer 1 of Nervos Network, a public/permissionless blockchain."
+homepage = "https://github.com/nervosnetwork/ckb"
+repository = "https://github.com/nervosnetwork/ckb"
+resolver = "2"
 
 [build-dependencies]
-ckb-build-info = { path = "util/build-info" }
+ckb-build-info = { path = "util/build-info", version = "= 0.43.0" }
 
 [dependencies]
-ckb-build-info = { path = "util/build-info" }
-ckb-bin = { path = "ckb-bin" }
+ckb-build-info = { path = "util/build-info", version = "= 0.43.0" }
+ckb-bin = { path = "ckb-bin", version = "= 0.43.0" }
 
 [dev-dependencies]
 
 [workspace]
+# To get a list sorted by dependencies, run devtools/ci/check-cyclic-dependencies.py
 members = [
-    # Members are ordered by dependencies. Crates at top has fewer dependencies.
+    "util",
+    "util/occupied-capacity/core",
+    "util/channel",
+    "util/fixed-hash/core",
     "util/build-info",
     "util/logger",
     "util/logger-config",
-    "util/logger-service",
     "util/metrics",
     "util/metrics-config",
-    "util/metrics-service",
-    "util/memory-tracker",
-    "util",
     "util/hash",
-    "util/fixed-hash",
-    "util/chain-iter",
-    "util/crypto",
     "util/rational",
-    "util/multisig",
-    "util/stop-handler",
-    "util/occupied-capacity",
-    "util/types",
-    "util/runtime",
-    "util/jsonrpc-types",
-    "util/fee-estimator",
     "util/rust-unstable-port",
-    "db",
-    "db-migration",
+    "benches",
+    "db-schema",
+    "util/spawn",
+    "util/occupied-capacity/macros",
+    "util/fixed-hash/macros",
+    "util/logger-service",
+    "util/stop-handler",
+    "util/runtime",
+    "util/metrics-service",
+    "util/fixed-hash",
+    "util/occupied-capacity",
+    "util/crypto",
+    "util/constant",
+    "error",
+    "util/multisig",
+    "util/types",
+    "util/jsonrpc-types",
+    "freezer",
     "resource",
     "pow",
-    "network",
-    "util/network-alert",
     "util/dao/utils",
+    "traits",
     "spec",
     "util/proposal-table",
-    "store",
     "script",
-    "traits",
+    "util/app-config",
+    "db",
+    "network",
+    "miner",
+    "notify",
+    "util/memory-tracker",
+    "db-migration",
+    "util/network-alert",
+    "store",
+    "util/chain-iter",
     "util/test-chain-utils",
     "util/dao",
     "util/reward-calculator",
+    "util/snapshot",
+    "verification/traits",
     "verification",
-    "shared",
+    "verification/contextual",
     "tx-pool",
+    "shared",
     "chain",
-    "indexer",
     "sync",
-    "miner",
-    "rpc",
     "util/instrument",
-    "util/app-config",
-    "ckb-bin",
-    "benches",
-    "error",
-    "notify",
+    "rpc",
+    "util/launcher/migration-template",
+    "util/launcher",
+    "ckb-bin"
 ]
 
 [profile.release]
@@ -80,11 +96,6 @@ jemallocator = { version = "0.3.0", features = ["unprefixed_malloc_on_supported_
 [features]
 default = []
 deadlock_detection = ["ckb-bin/deadlock_detection"]
+with_sentry = ["ckb-bin/with_sentry"]
+with_dns_seeding = ["ckb-bin/with_dns_seeding"]
 profiling = ["jemallocator/profiling", "ckb-bin/profiling"]
-
-[patch.crates-io]
-# Fix RUSTSEC-2020-0041.
-metrics         = { git = "https://github.com/nervosnetwork/metrics-rs", tag = "metrics-runtime-v0.13.1-patch.1" }
-metrics-runtime = { git = "https://github.com/nervosnetwork/metrics-rs", tag = "metrics-runtime-v0.13.1-patch.1" }
-metrics-core    = { git = "https://github.com/nervosnetwork/metrics-rs", tag = "metrics-runtime-v0.13.1-patch.1" }
-sentry      = { git = "https://github.com/nervosnetwork/sentry-rust", tag = "sentry-v0.17.0-patch.1" }

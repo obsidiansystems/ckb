@@ -9,7 +9,7 @@ use secp256k1::Message as SecpMessage;
 use std::fmt;
 use std::str::FromStr;
 
-//RecoverableSignature compact serialize
+/// RecoverableSignature compact serialize
 #[derive(Clone)]
 pub struct Signature([u8; 65]);
 
@@ -32,6 +32,7 @@ impl Signature {
         self.0[64]
     }
 
+    /// Construct a new Signature from compact serialize slice and rec_id
     pub fn from_compact(rec_id: RecoveryId, ret: [u8; 64]) -> Self {
         let mut data = [0; 65];
         data[0..64].copy_from_slice(&ret[0..64]);
@@ -39,7 +40,7 @@ impl Signature {
         Signature(data)
     }
 
-    /// Create a signature object from the sig.
+    /// Construct a new Signature from rsv.
     pub fn from_rsv(r: &H256, s: &H256, v: u8) -> Self {
         let mut sig = [0u8; 65];
         sig[0..32].copy_from_slice(r.as_bytes());
@@ -48,6 +49,7 @@ impl Signature {
         Signature(sig)
     }
 
+    /// Construct a new Signature from slice.
     pub fn from_slice(data: &[u8]) -> Result<Self, Error> {
         if data.len() != 65 {
             return Err(Error::InvalidSignature);
@@ -97,10 +99,12 @@ impl Signature {
         Ok(pubkey.into())
     }
 
+    /// Serializes the signature to vec
     pub fn serialize(&self) -> Vec<u8> {
         Vec::from(&self.0[..])
     }
 
+    /// Serializes the signature in DER format
     pub fn serialize_der(&self) -> Vec<u8> {
         self.to_recoverable()
             .unwrap()
@@ -113,9 +117,9 @@ impl Signature {
 impl fmt::Debug for Signature {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         f.debug_struct("Signature")
-            .field("r", &hex_string(&self.0[0..32]).expect("hex string"))
-            .field("s", &hex_string(&self.0[32..64]).expect("hex string"))
-            .field("v", &hex_string(&self.0[64..65]).expect("hex string"))
+            .field("r", &hex_string(&self.0[0..32]))
+            .field("s", &hex_string(&self.0[32..64]))
+            .field("v", &hex_string(&self.0[64..65]))
             .finish()
     }
 }

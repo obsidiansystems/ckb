@@ -3,11 +3,11 @@ trigger:
     include:
     - '*'
   tags:
-    include:
+    exclude:
     - '*'
 
 variables:
-  CKBClientVersion: v0.35.0
+  CKBClientVersion: v0.42.1
 
 jobs:
   - job: UnitTest
@@ -27,7 +27,7 @@ jobs:
     steps:
       - template: devtools/azure/windows-dependencies.yml
         parameters:
-          rustup_toolchain: '1.45.2-x86_64-pc-windows-msvc'
+          rustup_toolchain: '1.51.0-x86_64-pc-windows-msvc'
       - pwsh: devtools/windows/make test
         displayName: Run unit tests
         env:
@@ -49,21 +49,25 @@ jobs:
     steps:
       - template: devtools/azure/windows-dependencies.yml
         parameters:
-          rustup_toolchain: '1.45.2-x86_64-pc-windows-msvc'
-      - pwsh: devtools/windows/make CKB_TEST_SEC_COEFFICIENT=5 CKB_TEST_ARGS="--max-time 1200 -c 4" integration
+          rustup_toolchain: '1.51.0-x86_64-pc-windows-msvc'
+      - pwsh: devtools/windows/make CKB_TEST_SEC_COEFFICIENT=5 CKB_TEST_ARGS="-c 4 --no-report" integration
         displayName: Run integration tests
         env:
           CI: true
+          SENTRY_DSN: 'https://15373165fbf2439b99ba46684dfbcb12@sentry.nervos.org/7'
+          LOGBAK_USER: $(LOGBAK_USER)
+          LOGBAK_PASSWORD: $(LOGBAK_PASSWORD)
+          LOGBAK_SERVER: $(LOGBAK_SERVER)
 
   - job: Package
     timeoutInMinutes: 0
-    condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/')
+    condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/pkg/')
     pool:
       vmImage: 'windows-2019'
     steps:
       - template: devtools/azure/windows-dependencies.yml
         parameters:
-          rustup_toolchain: '1.45.2-x86_64-pc-windows-msvc'
+          rustup_toolchain: '1.51.0-x86_64-pc-windows-msvc'
       - pwsh: devtools/windows/make prod
         displayName: Build
       - script: |
@@ -106,5 +110,5 @@ jobs:
             $(Build.ArtifactStagingDirectory)/*.zip
             $(Build.ArtifactStagingDirectory)/*.asc
           assetUploadMode: replace
-          isPreRelease: true
+          isDraft: true
           addChangeLog: false

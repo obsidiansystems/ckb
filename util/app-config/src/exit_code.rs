@@ -4,13 +4,18 @@ use std::io;
 #[repr(i32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ExitCode {
+    /// Command line arguments error.
     Cli = 64,
+    /// Config options error.
     Config = 65,
+    /// Operation system I/O error.
     IO = 66,
+    /// General application failures.
     Failure = 113,
 }
 
 impl ExitCode {
+    /// Converts into signed 32-bit integer which can be used as the process exit status.
     pub fn into(self) -> i32 {
         self as i32
     }

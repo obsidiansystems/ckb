@@ -1,6 +1,7 @@
 use numext_fixed_uint::prelude::UintConvert;
 use numext_fixed_uint::{u512, U256, U512};
 
+/// The minimal difficulty that can be represented in the compact format.
 pub const DIFF_TWO: u32 = 0x2080_0000;
 
 const ONE: U256 = U256::one();
@@ -43,6 +44,7 @@ fn get_low64(target: &U256) -> u64 {
     target.0[0]
 }
 
+/// Converts PoW target into compact format of difficulty.
 pub fn target_to_compact(target: U256) -> u32 {
     let bits = 256 - target.leading_zeros();
     let exponent = u64::from((bits + 7) / 8);
@@ -56,6 +58,7 @@ pub fn target_to_compact(target: U256) -> u32 {
     compact as u32
 }
 
+/// Converts compact format of difficulty to PoW target.
 pub fn compact_to_target(compact: u32) -> (U256, bool) {
     let exponent = compact >> 24;
     let mut mantissa = U256::from(compact & 0x00ff_ffff);
@@ -73,6 +76,7 @@ pub fn compact_to_target(compact: u32) -> (U256, bool) {
     (ret, overflow)
 }
 
+/// Converts compact format of difficulty to the decoded difficulty.
 pub fn compact_to_difficulty(compact: u32) -> U256 {
     let (target, overflow) = compact_to_target(compact);
     if target.is_zero() || overflow {
@@ -81,6 +85,7 @@ pub fn compact_to_difficulty(compact: u32) -> U256 {
     target_to_difficulty(&target)
 }
 
+/// Converts difficulty into the compact format.
 pub fn difficulty_to_compact(difficulty: U256) -> u32 {
     let target = difficulty_to_target(&difficulty);
     target_to_compact(target)

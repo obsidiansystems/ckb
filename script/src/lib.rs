@@ -1,3 +1,4 @@
+//! CKB component to run the type/lock scripts.
 pub mod cost_model;
 mod error;
 mod ill_transaction_checker;

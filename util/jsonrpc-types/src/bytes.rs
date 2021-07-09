@@ -2,31 +2,48 @@ use ckb_types::{bytes::Bytes, packed, prelude::*};
 use faster_hex::{hex_decode, hex_encode};
 use std::fmt;
 
+/// Variable-length binary encoded as a 0x-prefixed hex string in JSON.
+///
+/// ## Example
+///
+/// | JSON       | Binary                               |
+/// | ---------- | ------------------------------------ |
+/// | "0x"       | Empty binary                         |
+/// | "0x00"     | Single byte 0                        |
+/// | "0x636b62" | 3 bytes, UTF-8 encoding of ckb       |
+/// | "00"       | Invalid, 0x is required              |
+/// | "0x0"      | Invalid, each byte requires 2 digits |
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct JsonBytes(Bytes);
 
 impl JsonBytes {
+    /// Creates the `JsonBytes` from `Bytes`.
     pub fn from_bytes(bytes: Bytes) -> Self {
         JsonBytes(bytes)
     }
 
+    /// Creates the `JsonBytes` from `Vec<u8>`.
     pub fn from_vec(vec: Vec<u8>) -> Self {
         JsonBytes(Bytes::from(vec))
     }
 
+    /// Converts into `Bytes`.
     pub fn into_bytes(self) -> Bytes {
         let JsonBytes(bytes) = self;
         bytes
     }
 
+    /// Gets the number of bytes.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Tells whether this is an empty bytes.
     pub fn is_empty(&self) -> bool {
         0 == self.len()
     }
 
+    /// Gets the underlying slice.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }

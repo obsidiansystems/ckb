@@ -1,9 +1,9 @@
+use crate::chain::ChainController;
 use crate::tests::util::{
     create_always_success_tx, create_cellbase, create_multi_outputs_transaction,
     create_transaction, create_transaction_with_out_point, dao_data, start_chain, MockChain,
     MockStore,
 };
-use crate::{chain::ChainController, switch::Switch};
 use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder};
 use ckb_dao_utils::genesis_dao_data;
 use ckb_error::assert_error_eq;
@@ -16,13 +16,13 @@ use ckb_types::{
     core::{
         capacity_bytes,
         cell::{CellMeta, CellProvider, CellStatus},
-        BlockBuilder, BlockView, Capacity, EpochExt, HeaderView, TransactionBuilder,
-        TransactionInfo,
+        BlockBuilder, BlockView, Capacity, HeaderView, TransactionBuilder, TransactionInfo,
     },
     packed::{CellInput, CellOutputBuilder, OutPoint, Script},
     utilities::{compact_to_difficulty, difficulty_to_compact},
     U256,
 };
+use ckb_verification_traits::Switch;
 use std::sync::Arc;
 
 #[test]
@@ -116,7 +116,7 @@ fn test_genesis_transaction_spend() {
         shared
             .snapshot()
             .cell(&OutPoint::new(genesis_tx_hash, 0), false),
-        CellStatus::Dead
+        CellStatus::Unknown
     );
 }
 
@@ -177,7 +177,7 @@ fn test_transaction_spend_in_same_block() {
 
     assert_eq!(
         shared.snapshot().cell(&OutPoint::new(tx1_hash, 0), false),
-        CellStatus::Dead
+        CellStatus::Unknown
     );
 
     let epoch = mock_store
@@ -201,6 +201,7 @@ fn test_transaction_spend_in_same_block() {
                 2
             )),
             mem_cell_data: None,
+            mem_cell_data_hash: None,
         })
     );
 }
@@ -269,7 +270,7 @@ fn test_transaction_conflict_in_different_blocks() {
             .expect("process block ok");
     }
     assert_error_eq!(
-        OutPointError::Dead(OutPoint::new(tx1_hash, 0)),
+        OutPointError::Unknown(OutPoint::new(tx1_hash, 0)),
         chain_controller
             .process_block(Arc::new(chain.blocks()[4].clone()))
             .unwrap_err(),
@@ -303,7 +304,7 @@ fn test_invalid_out_point_index_in_same_block() {
             .expect("process block ok");
     }
     assert_error_eq!(
-        OutPointError::Unknown(vec![OutPoint::new(tx1_hash, 1)]),
+        OutPointError::Unknown(OutPoint::new(tx1_hash, 1)),
         chain_controller
             .process_block(Arc::new(chain.blocks()[3].clone()))
             .unwrap_err(),
@@ -339,7 +340,7 @@ fn test_invalid_out_point_index_in_different_blocks() {
     }
 
     assert_error_eq!(
-        OutPointError::Unknown(vec![OutPoint::new(tx1_hash, 1)]),
+        OutPointError::Unknown(OutPoint::new(tx1_hash, 1)),
         chain_controller
             .process_block(Arc::new(chain.blocks()[4].clone()))
             .unwrap_err(),
@@ -469,8 +470,7 @@ fn prepare_context_chain(
     consensus: Consensus,
     orphan_count: u64,
     timestep: u64,
-) -> (ChainController, Shared, HeaderView, EpochExt) {
-    let epoch = consensus.genesis_epoch_ext.clone();
+) -> (ChainController, Shared, HeaderView) {
     let (chain_controller, shared, genesis) = start_chain(Some(consensus));
     let final_number = shared.consensus().genesis_epoch_ext().length();
 
@@ -478,15 +478,14 @@ fn prepare_context_chain(
     let mut chain2: Vec<BlockView> = Vec::new();
 
     let mut parent = genesis.clone();
-    let mut last_epoch = epoch.clone();
-
     let mock_store = MockStore::new(&parent, shared.store());
 
     for _ in 1..final_number - 1 {
         let epoch = shared
-            .snapshot()
-            .next_epoch_ext(shared.consensus(), &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+            .consensus()
+            .next_epoch_ext(&parent, &shared.store().as_data_provider())
+            .unwrap()
+            .epoch();
 
         let transactions = vec![create_cellbase(&mock_store, shared.consensus(), &parent)];
         let dao = dao_data(
@@ -512,16 +511,15 @@ fn prepare_context_chain(
         chain1.push(new_block.clone());
         mock_store.insert_block(&new_block, &epoch);
         parent = new_block.header().clone();
-        last_epoch = epoch;
     }
 
     parent = genesis.clone();
-    let mut last_epoch = epoch;
     for i in 1..final_number {
         let epoch = shared
-            .snapshot()
-            .next_epoch_ext(shared.consensus(), &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+            .consensus()
+            .next_epoch_ext(&parent, &shared.store().as_data_provider())
+            .unwrap()
+            .epoch();
         let mut uncles = vec![];
         if i < orphan_count {
             uncles.push(chain1[i as usize].as_uncle());
@@ -552,9 +550,8 @@ fn prepare_context_chain(
         chain2.push(new_block.clone());
         mock_store.insert_block(&new_block, &epoch);
         parent = new_block.header().clone();
-        last_epoch = epoch;
     }
-    (chain_controller, shared, genesis, last_epoch)
+    (chain_controller, shared, genesis)
 }
 
 #[test]
@@ -581,8 +578,7 @@ fn test_epoch_hash_rate_dampening() {
     consensus
         .genesis_epoch_ext
         .set_previous_epoch_hash_rate(U256::from(10u64));
-    let (_chain_controller, shared, _genesis, _last_epoch) =
-        prepare_context_chain(consensus, 26, 20_000);
+    let (_chain_controller, shared, _genesis) = prepare_context_chain(consensus, 26, 20_000);
 
     {
         let snapshot = shared.snapshot();
@@ -594,8 +590,10 @@ fn test_epoch_hash_rate_dampening() {
         assert_eq!(total_uncles_count, 25);
 
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         // last_epoch_previous_epoch_hash_rate 10
         // HPS  = dampen(last_difficulty * (last_epoch_length + last_uncles_count) / last_duration)
@@ -617,8 +615,7 @@ fn test_epoch_hash_rate_dampening() {
     consensus
         .genesis_epoch_ext
         .set_previous_epoch_hash_rate(U256::from(200u64));
-    let (_chain_controller, shared, _genesis, _last_epoch) =
-        prepare_context_chain(consensus, 26, 20_000);
+    let (_chain_controller, shared, _genesis) = prepare_context_chain(consensus, 26, 20_000);
 
     {
         let snapshot = shared.snapshot();
@@ -630,8 +627,10 @@ fn test_epoch_hash_rate_dampening() {
         assert_eq!(total_uncles_count, 25);
 
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         // last_epoch_previous_epoch_hash_rate 200
         // HPS  = dampen(last_difficulty * (last_epoch_length + last_uncles_count) / last_duration)
@@ -672,8 +671,7 @@ fn test_orphan_rate_estimation_overflow() {
     // orphan_rate_target 1/40
     // last_duration 798000
     // last_uncles_count 150
-    let (_chain_controller, shared, _genesis, _last_epoch) =
-        prepare_context_chain(consensus, 151, 2_000_000);
+    let (_chain_controller, shared, _genesis) = prepare_context_chain(consensus, 151, 2_000_000);
     {
         let snapshot = shared.snapshot();
         let tip = snapshot.tip_header().clone();
@@ -684,8 +682,10 @@ fn test_orphan_rate_estimation_overflow() {
         assert_eq!(total_uncles_count, 150);
 
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         assert_eq!(epoch.length(), 300, "epoch length {}", epoch.length());
 
@@ -728,7 +728,7 @@ fn test_next_epoch_ext() {
     // epoch_duration_target 14400
     // orphan_rate_target 1/40
     // last_duration 7980
-    let (_chain_controller, shared, _genesis, _last_epoch) =
+    let (_chain_controller, shared, _genesis) =
         prepare_context_chain(consensus.clone(), 13, 20_000);
     {
         let snapshot = shared.snapshot();
@@ -740,8 +740,10 @@ fn test_next_epoch_ext() {
         assert_eq!(total_uncles_count, 12);
 
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         // last_uncles_count 12
         // HPS  = dampen(last_difficulty * (last_epoch_length + last_uncles_count) / last_duration)
@@ -784,8 +786,7 @@ fn test_next_epoch_ext() {
         assert_eq!(epoch.block_reward(bound).unwrap(), block_reward);
     }
 
-    let (_chain_controller, shared, _genesis, _last_epoch) =
-        prepare_context_chain(consensus.clone(), 6, 20_000);
+    let (_chain_controller, shared, _genesis) = prepare_context_chain(consensus.clone(), 6, 20_000);
     {
         let snapshot = shared.snapshot();
         let tip = snapshot.tip_header().clone();
@@ -796,8 +797,10 @@ fn test_next_epoch_ext() {
         assert_eq!(total_uncles_count, 5);
 
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         // last_uncles_count 5
         // last_epoch_length 400
@@ -821,8 +824,7 @@ fn test_next_epoch_ext() {
         );
     }
 
-    let (_chain_controller, shared, _genesis, _last_epoch) =
-        prepare_context_chain(consensus, 151, 20_000);
+    let (_chain_controller, shared, _genesis) = prepare_context_chain(consensus, 151, 20_000);
     {
         let snapshot = shared.snapshot();
         let tip = snapshot.tip_header().clone();
@@ -837,8 +839,10 @@ fn test_next_epoch_ext() {
         // epoch_duration_target 14400
         // last_duration 7980
         let epoch = snapshot
-            .next_epoch_ext(shared.consensus(), snapshot.epoch_ext(), &tip)
-            .unwrap();
+            .consensus()
+            .next_epoch_ext(&tip, &snapshot.as_data_provider())
+            .unwrap()
+            .epoch();
 
         // C_i+1,m = (o_ideal * (1 + o_i ) * L_ideal × C_i,m) / (o_i * (1 + o_ideal ) * L_i)
         // ((150 + 400) * 14400 * 400) / ((40 + 1) * 150 * 7980) = 64

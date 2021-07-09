@@ -1,5 +1,5 @@
 use crate::types::{BlockNumberAndHash, InflightBlocks};
-use crate::BLOCK_DOWNLOAD_TIMEOUT;
+use ckb_constant::sync::BLOCK_DOWNLOAD_TIMEOUT;
 use ckb_types::prelude::*;
 use ckb_types::{h256, H256};
 use std::collections::HashSet;
@@ -94,6 +94,7 @@ fn inflight_blocks_timeout() {
     let faketime_file = faketime::millis_tempfile(0).expect("create faketime file");
     faketime::enable(&faketime_file);
     let mut inflight_blocks = InflightBlocks::default();
+    inflight_blocks.protect_num = 0;
 
     assert!(inflight_blocks.insert(1.into(), (1, h256!("0x1").pack()).into()));
     assert!(inflight_blocks.insert(1.into(), (2, h256!("0x2").pack()).into()));
@@ -147,6 +148,7 @@ fn inflight_trace_number_state() {
     faketime::enable(&faketime_file);
 
     let mut inflight_blocks = InflightBlocks::default();
+    inflight_blocks.protect_num = 0;
 
     assert!(inflight_blocks.insert(1.into(), (1, h256!("0x1").pack()).into()));
     assert!(inflight_blocks.insert(2.into(), (2, h256!("0x2").pack()).into()));

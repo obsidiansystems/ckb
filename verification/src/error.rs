@@ -1,269 +1,292 @@
-use ckb_error::Error;
-use ckb_types::{
-    core::{Capacity, Version},
-    packed::{Byte32, OutPoint},
-};
-use failure::{Backtrace, Context, Fail};
-use std::fmt::{self, Display};
+use ckb_error::{def_error_base_on_kind, prelude::*, Error};
+use ckb_types::{core::Version, packed::Byte32};
+use derive_more::Display;
 
-#[derive(Clone, Debug, Display, Eq, PartialEq)]
-pub enum TransactionErrorSource {
-    CellDeps,
-    HeaderDeps,
-    Inputs,
-    Outputs,
-    OutputsData,
-    Witnesses,
-}
+pub use ckb_types::core::error::{TransactionError, TransactionErrorSource};
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
-pub enum TransactionError {
-    /// output.occupied_capacity() > output.capacity()
-    #[fail(
-        display = "InsufficientCellCapacity({}[{}]): expected occupied capacity ({:#x}) <= capacity ({:#x})",
-        source, index, occupied_capacity, capacity
-    )]
-    InsufficientCellCapacity {
-        source: TransactionErrorSource,
-        index: usize,
-        occupied_capacity: Capacity,
-        capacity: Capacity,
-    },
-
-    /// SUM([o.capacity for o in outputs]) > SUM([i.capacity for i in inputs])
-    #[fail(
-        display = "OutputsSumOverflow: expected outputs capacity ({:#x}) <= inputs capacity ({:#x})",
-        outputs_sum, inputs_sum
-    )]
-    OutputsSumOverflow {
-        inputs_sum: Capacity,
-        outputs_sum: Capacity,
-    },
-
-    /// inputs.is_empty() || outputs.is_empty()
-    #[fail(display = "Empty({})", source)]
-    Empty { source: TransactionErrorSource },
-
-    /// Duplicated dep-out-points within the same transaction
-    #[fail(display = "DuplicateCellDeps({})", out_point)]
-    DuplicateCellDeps { out_point: OutPoint },
-
-    /// Duplicated headers deps without within the same transaction
-    #[fail(display = "DuplicateHeaderDeps({})", hash)]
-    DuplicateHeaderDeps { hash: Byte32 },
-
-    /// outputs.len() != outputs_data.len()
-    #[fail(
-        display = "OutputsDataLengthMismatch: expected outputs data length ({}) = outputs length ({})",
-        outputs_data_len, outputs_len
-    )]
-    OutputsDataLengthMismatch {
-        outputs_len: usize,
-        outputs_data_len: usize,
-    },
-
-    /// The format of `transaction.since` is invalid
-    #[fail(
-        display = "InvalidSince(Inputs[{}]): the field since is invalid",
-        index
-    )]
-    InvalidSince { index: usize },
-
-    /// The transaction is not mature which is required by `transaction.since`
-    #[fail(
-        display = "Immature(Inputs[{}]): the transaction is immature because of the since requirement",
-        index
-    )]
-    Immature { index: usize },
-
-    /// The transaction is not mature which is required by cellbase maturity rule
-    #[fail(display = "CellbaseImmaturity({}[{}])", source, index)]
-    CellbaseImmaturity {
-        source: TransactionErrorSource,
-        index: usize,
-    },
-
-    /// The transaction version is mismatched with the system can hold
-    #[fail(display = "MismatchedVersion: expected {}, got {}", expected, actual)]
-    MismatchedVersion { expected: Version, actual: Version },
-
-    /// The transaction size is too large
-    #[fail(
-        display = "ExceededMaximumBlockBytes: expected transaction serialized size ({}) < block size limit ({})",
-        actual, limit
-    )]
-    ExceededMaximumBlockBytes { limit: u64, actual: u64 },
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Display)]
+/// A list specifying categories of ckb header error.
+///
+/// This list is intended to grow over time and it is not recommended to exhaustively match against it.
+///
+/// It is used with the [`HeaderError`].
+///
+/// [`HeaderError`]: ../ckb_verification/struct.HeaderError.html
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Display)]
 pub enum HeaderErrorKind {
+    /// It indicates that the underlying error is [`InvalidParentError`].
+    ///
+    /// [`InvalidParentError`]: ../ckb_verification/struct.InvalidParentError.html
     InvalidParent,
+    /// It indicates that the underlying error is [`PowError`].
+    ///
+    /// [`PowError`]: ../ckb_verification/enum.PowError.html
     Pow,
+    /// It indicates that the underlying error is [`TimestampError`].
+    ///
+    /// [`TimestampError`]: ../ckb_verification/enum.TimestampError.html
     Timestamp,
+    /// It indicates that the underlying error is [`NumberError`].
+    ///
+    /// [`NumberError`]: ../ckb_verification/struct.NumberError.html
     Number,
+    /// It indicates that the underlying error is [`EpochError`].
+    ///
+    /// [`EpochError`]: ../ckb_verification/enum.EpochError.html
     Epoch,
+    /// It indicates that the underlying error is [`BlockVersionError`].
+    ///
+    /// [`BlockVersionError`]: ../ckb_verification/struct.BlockVersionError.html
     Version,
 }
 
-#[derive(Debug)]
-pub struct HeaderError {
-    kind: Context<HeaderErrorKind>,
-}
+def_error_base_on_kind!(
+    HeaderError,
+    HeaderErrorKind,
+    "Errors due the fact that the header rule is not respected."
+);
 
-#[derive(Debug)]
-pub struct BlockError {
-    kind: Context<BlockErrorKind>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Display)]
+/// A list specifying categories of ckb block error.
+///
+/// This list is intended to grow over time and it is not recommended to exhaustively match against it.
+///
+/// It is used with the [`BlockError`].
+///
+/// [`BlockError`]: ../ckb_verification/struct.BlockError.html
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Display)]
 pub enum BlockErrorKind {
+    /// There are duplicated proposal transactions.
     ProposalTransactionDuplicate,
 
     /// There are duplicate committed transactions.
     CommitTransactionDuplicate,
 
-    /// The merkle tree hash of proposed transactions does not match the one in header.
+    /// The calculated Merkle tree hash of proposed transactions does not match the one in the header.
     ProposalTransactionsHash,
 
-    /// The merkle tree hash of committed transactions does not match the one in header.
+    /// The calculated Merkle tree hash of committed transactions does not match the one in the header.
     TransactionsRoot,
 
-    /// Invalid data in DAO header field is invalid
+    /// The calculated dao field does not match with the one in the header.
     InvalidDAO,
 
-    /// Committed transactions verification error. It contains error for the first transaction that
-    /// fails the verification. The errors are stored as a tuple, where the first item is the
-    /// transaction index in the block and the second item is the transaction verification error.
+    /// It indicates that the underlying error is [`BlockTransactionsError`].
+    ///
+    /// [`BlockTransactionsError`]: ../ckb_verification/struct.BlockTransactionsError.html
     BlockTransactions,
 
+    /// It indicates that the underlying error is [`UnknownParentError`].
+    ///
+    /// [`UnknownParentError`]: ../ckb_verification/struct.UnknownParentError.html
     UnknownParent,
 
+    /// It indicates that the underlying error is [`UnclesError`].
+    ///
+    /// [`UnclesError`]: ../ckb_verification/enum.UnclesError.html
     Uncles,
 
+    /// It indicates that the underlying error is [`CellbaseError`].
+    ///
+    /// [`CellbaseError`]: ../ckb_verification/enum.CellbaseError.html
     Cellbase,
 
-    /// This error is returned when the committed transactions does not meet the 2-phases
-    /// propose-then-commit consensus rule.
+    /// It indicates that the underlying error is [`CommitError`].
+    ///
+    /// [`CommitError`]: ../ckb_verification/struct.CommitError.html
     Commit,
 
+    /// The number of block proposals exceeds limit.
     ExceededMaximumProposalsLimit,
 
+    /// Total cycles of the block transactions exceed limit.
     ExceededMaximumCycles,
 
+    /// Total bytes of block exceeds limit.
     ExceededMaximumBlockBytes,
 }
 
-#[derive(Fail, Debug)]
-#[fail(display = "BlockTransactionsError(index: {}, error: {})", index, error)]
+def_error_base_on_kind!(
+    BlockError,
+    BlockErrorKind,
+    "Errors due the fact that the block rule is not respected."
+);
+
+/// Errors occur during block transactions verification.
+#[derive(Error, Debug)]
+#[error("BlockTransactionsError(index: {index}, error: {error})")]
 pub struct BlockTransactionsError {
+    /// The index of the first erroneous transaction.
     pub index: u32,
+    /// The underlying error to that erroneous transaction.
     pub error: Error,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
-#[fail(display = "UnknownParentError(parent_hash: {})", parent_hash)]
+/// Cannot access the parent block to the cannonical chain.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
+#[error("UnknownParentError(parent_hash: {parent_hash})")]
 pub struct UnknownParentError {
+    /// The hash of parent block.
     pub parent_hash: Byte32,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone, Display)]
+/// Errors due to the fact that the 2pc rule is not respected.
+///
+/// See also [Two-Step Transaction Confirmation](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0020-ckb-consensus-protocol/0020-ckb-consensus-protocol.md#two-step-transaction-confirmation)
+#[derive(Error, Debug, PartialEq, Eq, Clone, Display)]
 pub enum CommitError {
+    /// There are blocks required at 2pc verification but not found.
     AncestorNotFound,
+    /// There are block transactions that have not been proposed in the proposal window.
     Invalid,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone, Display)]
+/// Errors due to the fact that the cellbase rule is not respected.
+///
+/// See more about cellbase transaction: [cellbase transaction]
+///
+/// [cellbase transaction]: https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0022-transaction-structure/0022-transaction-structure.md#exceptions
+#[derive(Error, Debug, PartialEq, Eq, Clone, Display)]
 pub enum CellbaseError {
+    /// The cellbase input is unexpected. The structure reference of correct cellbase input: [`new_cellbase_input`].
+    ///
+    /// [`new_cellbase_input`]: https://github.com/nervosnetwork/ckb/blob/ee0ccecd87013821a2e68120ba3510393c0373e7/util/types/src/extension/shortcuts.rs#L107-L109
     InvalidInput,
+    /// The cellbase output capacity is not equal to the total block reward.
     InvalidRewardAmount,
+    /// The cellbase output lock does not match with the target lock.
+    ///
+    /// As for 0 ~ PROPOSAL_WINDOW.farthest blocks, cellbase outputs should be empty; otherwise, lock of first cellbase output should match with the target block.
+    ///
+    /// Assumes the current block number is `i`, then its target block is that: (1) on that same chain with current block; (2) number is `i - PROPOSAL_WINDOW.farthest - 1`.
     InvalidRewardTarget,
+    /// The cellbase witness is not in [`CellbaseWitness`] format.
+    ///
+    /// [`CellbaseWitness`]: ../ckb_types/packed/struct.CellbaseWitness.html
     InvalidWitness,
+    /// The cellbase type script is not none.
     InvalidTypeScript,
+    /// The length of cellbase outputs and outputs-data should be equal and less than `1`.
     InvalidOutputQuantity,
+    /// There are multiple cellbase transactions inside the same block.
     InvalidQuantity,
+    /// The first block transaction is not a valid cellbase transaction.
+    ///
+    /// See also [`is_cellbase`].
+    ///
+    /// [`is_cellbase`]: https://github.com/nervosnetwork/ckb/blob/ee0ccecd87013821a2e68120ba3510393c0373e7/util/types/src/core/views.rs#L387-L389
     InvalidPosition,
+    /// The cellbase output-data is not empty.
     InvalidOutputData,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+/// Errors due to the fact that the uncle rule is not respected.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum UnclesError {
-    #[fail(display = "OverCount(max: {}, actual: {})", max, actual)]
-    OverCount { max: u32, actual: u32 },
+    /// The number of block uncles exceeds limit.
+    #[error("OverCount(max: {max}, actual: {actual})")]
+    OverCount {
+        /// The limited number of block uncles.
+        max: u32,
+        /// The actual number of block uncles.
+        actual: u32,
+    },
 
-    #[fail(
-        display = "InvalidDepth(min: {}, max: {}, actual: {})",
-        min, max, actual
-    )]
-    InvalidDepth { max: u64, min: u64, actual: u64 },
+    /// The calculated uncle-hash does not match with the one in the header.
+    #[error("InvalidHash(expected: {expected}, actual: {actual})")]
+    InvalidHash {
+        /// The calculated uncle-hash
+        expected: Byte32,
+        /// The actual uncle-hash
+        actual: Byte32,
+    },
 
-    #[fail(display = "InvalidHash(expected: {}, actual: {})", expected, actual)]
-    InvalidHash { expected: Byte32, actual: Byte32 },
-
-    #[fail(display = "InvalidNumber")]
+    /// There is an uncle whose number is greater than or equal to current block number.
+    #[error("InvalidNumber")]
     InvalidNumber,
 
-    #[fail(display = "InvalidTarget")]
+    /// There is an uncle who belongs to a different epoch from the current block.
+    #[error("InvalidTarget")]
     InvalidTarget,
 
-    #[fail(display = "InvalidDifficultyEpoch")]
+    /// There is an uncle who belongs to a different epoch from the current block.
+    #[error("InvalidDifficultyEpoch")]
     InvalidDifficultyEpoch,
 
-    #[fail(display = "ProposalsHash")]
+    /// There is an uncle whose proposals-hash does not match with the calculated result.
+    #[error("ProposalsHash")]
     ProposalsHash,
 
-    #[fail(display = "ProposalDuplicate")]
+    /// There is an uncle whose proposals have duplicated items.
+    #[error("ProposalDuplicate")]
     ProposalDuplicate,
 
-    #[fail(display = "Duplicate({})", _0)]
+    /// There are duplicated uncles in the current block.
+    #[error("Duplicate({0})")]
     Duplicate(Byte32),
 
-    #[fail(display = "DoubleInclusion({})", _0)]
+    /// There is an uncle that has already been included before.
+    #[error("DoubleInclusion({0})")]
     DoubleInclusion(Byte32),
 
-    #[fail(display = "DescendantLimit")]
+    /// The depth of uncle descendant exceeds limit.
+    #[error("DescendantLimit")]
     DescendantLimit,
 
-    #[fail(display = "ExceededMaximumProposalsLimit")]
+    /// The number of uncle proposals exceeds limit.
+    #[error("ExceededMaximumProposalsLimit")]
     ExceededMaximumProposalsLimit,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
-#[fail(
-    display = "BlockVersionError(expected: {}, actual: {})",
-    expected, actual
-)]
+/// The block version is unexpected.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
+#[error("BlockVersionError(expected: {expected}, actual: {actual})")]
 pub struct BlockVersionError {
+    /// The expected block version.
     pub expected: Version,
+    /// The actual block version.
     pub actual: Version,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
-#[fail(display = "InvalidParentError(parent_hash: {})", parent_hash)]
+/// The block's parent is marked as invalid.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
+#[error("InvalidParentError(parent_hash: {parent_hash})")]
 pub struct InvalidParentError {
+    /// The parent block hash.
     pub parent_hash: Byte32,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+/// Errors due to the fact that the pow rule is not respected.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum PowError {
-    #[fail(display = "Boundary(expected: {}, actual: {})", expected, actual)]
-    Boundary { expected: Byte32, actual: Byte32 },
-
-    #[fail(
-        display = "InvalidNonce: please set logger.filter to \"info,ckb-pow=debug\" to see detailed PoW verification information in the log"
-    )]
+    /// Error occurs during PoW verification.
+    #[error("InvalidNonce: please set logger.filter to \"info,ckb-pow=debug\" to see detailed PoW verification information in the log")]
     InvalidNonce,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+/// Errors due to the fact that the block timestamp rule is not respected.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum TimestampError {
-    #[fail(display = "BlockTimeTooOld(min: {}, actual: {})", min, actual)]
-    BlockTimeTooOld { min: u64, actual: u64 },
+    /// The block timestamp is older than the allowed oldest timestamp.
+    #[error("BlockTimeTooOld(min: {min}, actual: {actual})")]
+    BlockTimeTooOld {
+        /// The allowed oldest block timestamp.
+        min: u64,
+        /// The actual block timestamp.
+        actual: u64,
+    },
 
-    #[fail(display = "BlockTimeTooNew(max: {}, actual: {})", max, actual)]
-    BlockTimeTooNew { max: u64, actual: u64 },
+    /// The block timestamp is newer than the allowed newest timestamp.
+    #[error("BlockTimeTooNew(max: {max}, actual: {actual})")]
+    BlockTimeTooNew {
+        /// The allowed newest block timestamp.
+        max: u64,
+        /// The actual block timestamp.
+        actual: u64,
+    },
 }
 
 impl TimestampError {
+    /// Return `true` if this error is `TimestampError::BlockTimeTooNew`.
+    #[doc(hidden)]
     pub fn is_too_new(&self) -> bool {
         match self {
             Self::BlockTimeTooOld { .. } => false,
@@ -272,133 +295,55 @@ impl TimestampError {
     }
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
-#[fail(display = "NumberError(expected: {}, actual: {})", expected, actual)]
+/// The block number is not equal to parent number + `1`.
+/// Specially genesis block number is `0`.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
+#[error("NumberError(expected: {expected}, actual: {actual})")]
 pub struct NumberError {
+    /// The expected block number.
     pub expected: u64,
+    /// The actual block number.
     pub actual: u64,
 }
 
-#[derive(Fail, Debug, PartialEq, Eq, Clone)]
+/// Errors due to the fact that the block epoch is not expected.
+#[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum EpochError {
-    #[fail(
-        display = "TargetMismatch(expected: {:x}, actual: {:x})",
-        expected, actual
-    )]
-    TargetMismatch { expected: u32, actual: u32 },
+    /// The compact-target of block epoch is unexpected.
+    #[error("TargetMismatch(expected: {expected:x}, actual: {actual:x})")]
+    TargetMismatch {
+        /// The expected compact-target of block epoch.
+        expected: u32,
+        /// The actual compact-target of block epoch.
+        actual: u32,
+    },
 
-    #[fail(display = "NumberMismatch(expected: {}, actual: {})", expected, actual)]
-    NumberMismatch { expected: u64, actual: u64 },
-}
-
-impl TransactionError {
-    pub fn is_malformed_tx(&self) -> bool {
-        match self {
-            TransactionError::OutputsSumOverflow { .. }
-            | TransactionError::DuplicateCellDeps { .. }
-            | TransactionError::DuplicateHeaderDeps { .. }
-            | TransactionError::Empty { .. }
-            | TransactionError::InsufficientCellCapacity { .. }
-            | TransactionError::InvalidSince { .. }
-            | TransactionError::ExceededMaximumBlockBytes { .. }
-            | TransactionError::OutputsDataLengthMismatch { .. } => true,
-
-            TransactionError::Immature { .. }
-            | TransactionError::CellbaseImmaturity { .. }
-            | TransactionError::MismatchedVersion { .. } => false,
-        }
-    }
-}
-
-impl fmt::Display for HeaderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(cause) = self.cause() {
-            write!(f, "{}({})", self.kind(), cause)
-        } else {
-            write!(f, "{}", self.kind())
-        }
-    }
-}
-
-impl fmt::Display for BlockError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(cause) = self.cause() {
-            write!(f, "{}({})", self.kind(), cause)
-        } else {
-            write!(f, "{}", self.kind())
-        }
-    }
-}
-
-impl From<Context<HeaderErrorKind>> for HeaderError {
-    fn from(kind: Context<HeaderErrorKind>) -> Self {
-        Self { kind }
-    }
-}
-
-impl Fail for HeaderError {
-    fn cause(&self) -> Option<&dyn Fail> {
-        self.inner().cause()
-    }
-
-    fn backtrace(&self) -> Option<&Backtrace> {
-        self.inner().backtrace()
-    }
+    /// The number of block epoch is unexpected.
+    #[error("NumberMismatch(expected: {expected}, actual: {actual})")]
+    NumberMismatch {
+        /// The expected number of block epoch.
+        expected: u64,
+        /// The actual number of block epoch.
+        actual: u64,
+    },
 }
 
 impl HeaderError {
-    pub fn kind(&self) -> &HeaderErrorKind {
-        self.kind.get_context()
-    }
-
-    pub fn downcast_ref<T: Fail>(&self) -> Option<&T> {
-        self.cause().and_then(|cause| cause.downcast_ref::<T>())
-    }
-
-    pub fn inner(&self) -> &Context<HeaderErrorKind> {
-        &self.kind
-    }
-
-    // Note: if the header is invalid, that may also be grounds for disconnecting the peer,
-    // However, there is a circumstance where that does not hold:
-    // if the header's timestamp is more than ALLOWED_FUTURE_BLOCKTIME ahead of our current time.
-    // In that case, the header may become valid in the future,
-    // and we don't want to disconnect a peer merely for serving us one too-far-ahead block header,
-    // to prevent an attacker from splitting the network by mining a block right at the ALLOWED_FUTURE_BLOCKTIME boundary.
+    /// Downcast `HeaderError` to `TimestampError` then check [`TimestampError::is_too_new`].
+    ///
+    /// Note: if the header is invalid, that may also be grounds for disconnecting the peer,
+    /// However, there is a circumstance where that does not hold:
+    /// if the header's timestamp is more than ALLOWED_FUTURE_BLOCKTIME ahead of our current time.
+    /// In that case, the header may become valid in the future,
+    /// and we don't want to disconnect a peer merely for serving us one too-far-ahead block header,
+    /// to prevent an attacker from splitting the network by mining a block right at the ALLOWED_FUTURE_BLOCKTIME boundary.
+    ///
+    /// [`TimestampError::is_too_new`]
+    #[doc(hidden)]
     pub fn is_too_new(&self) -> bool {
         self.downcast_ref::<TimestampError>()
             .map(|e| e.is_too_new())
             .unwrap_or(false)
-    }
-}
-
-impl From<Context<BlockErrorKind>> for BlockError {
-    fn from(kind: Context<BlockErrorKind>) -> Self {
-        Self { kind }
-    }
-}
-
-impl Fail for BlockError {
-    fn cause(&self) -> Option<&dyn Fail> {
-        self.inner().cause()
-    }
-
-    fn backtrace(&self) -> Option<&Backtrace> {
-        self.inner().backtrace()
-    }
-}
-
-impl BlockError {
-    pub fn kind(&self) -> &BlockErrorKind {
-        self.kind.get_context()
-    }
-
-    pub fn downcast_ref<T: Fail>(&self) -> Option<&T> {
-        self.cause().and_then(|cause| cause.downcast_ref::<T>())
-    }
-
-    pub fn inner(&self) -> &Context<BlockErrorKind> {
-        &self.kind
     }
 }
 

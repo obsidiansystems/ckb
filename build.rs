@@ -1,3 +1,4 @@
+//! Build script for the binary crate `ckb`.
 use std::path::Path;
 
 fn rerun_if_changed(path_str: &str) -> bool {
@@ -8,16 +9,18 @@ fn rerun_if_changed(path_str: &str) -> bool {
         || path.starts_with("docker")
         || path.starts_with("docs")
         || path.starts_with("test")
+        || path.starts_with(".github")
     {
         return false;
     }
 
-    match path_str {
-        "COPYING" | "Makefile" | "clippy.toml" | "rustfmt.toml" | "rust-toolchain" => false,
-        _ => true,
-    }
+    !matches!(
+        path_str,
+        "COPYING" | "Makefile" | "clippy.toml" | "rustfmt.toml" | "rust-toolchain"
+    )
 }
 
+#[allow(clippy::manual_strip)]
 fn main() {
     let files_stdout = std::process::Command::new("git")
         .args(&["ls-tree", "-r", "--name-only", "HEAD"])
@@ -40,7 +43,11 @@ fn main() {
 
         let head = std::fs::read_to_string(".git/HEAD").unwrap_or_default();
         if head.starts_with("ref: ") {
-            println!("cargo:rerun-if-changed=.git/{}", head[5..].trim());
+            let path_str = format!(".git/{}", head[5..].trim());
+            let path = Path::new(&path_str);
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path_str);
+            }
         }
     }
 

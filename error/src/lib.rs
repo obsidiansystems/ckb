@@ -1,72 +1,94 @@
-#[macro_use]
-extern crate enum_display_derive;
+//! Underlying error types used over ckb crates.
+
+use std::{error::Error as StdError, fmt, ops::Deref, sync::Arc};
 
 mod convert;
 mod internal;
+pub mod prelude;
 pub mod util;
 
-use failure::{Backtrace, Context, Fail};
-pub use internal::{InternalError, InternalErrorKind};
-use std::fmt::{self, Display};
+use derive_more::Display;
+pub use internal::{InternalError, InternalErrorKind, OtherError, SilentError};
+use prelude::*;
 
+/// A wrapper around a dynamic error type.
+#[derive(Clone)]
+pub struct AnyError(Arc<anyhow::Error>);
+
+/// A list specifying categories of ckb error.
+///
+/// This list is intended to grow over time and it is not recommended to exhaustively match against it.
+///
+/// It is used with [`Error`].
+///
+/// [`Error`]: ./struct.Error.html
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Display)]
 pub enum ErrorKind {
+    /// It indicates that the underlying error is [`OutPointError`].
+    ///
+    /// [`OutPointError`]: ../ckb_types/core/error/enum.OutPointError.html
     OutPoint,
+    /// It indicates that the underlying error is [`TransactionError`].
+    ///
+    /// [`TransactionError`]: ../ckb_verification/enum.TransactionError.html
     Transaction,
+    /// It indicates that the underlying error is [`Reject`].
+    ///
+    /// [`Reject`]: ../ckb_tx_pool/error/enum.Reject.html
     SubmitTransaction,
+    /// It indicates that the underlying error is [`TransactionScriptError`].
+    ///
+    /// [`TransactionScriptError`]: ../ckb_script/struct.TransactionScriptError.html
     Script,
+    /// It indicates that the underlying error is [`HeaderError`].
+    ///
+    /// [`HeaderError`]: ../ckb_verification/struct.HeaderError.html
     Header,
+    /// It indicates that the underlying error is [`BlockError`]
+    ///
+    /// [`BlockError`]: ../ckb_verification/struct.BlockError.html
     Block,
+    /// It indicates that the underlying error is [`InternalError`]
+    ///
+    /// [`InternalError`]: ./struct.InternalError.html
     Internal,
+    /// It indicates that the underlying error is [`DaoError`]
+    ///
+    /// [`DaoError`]: ../ckb_types/core/error/enum.OutPointError.html
     Dao,
+    /// It indicates that the underlying error is [`SpecError`]
+    ///
+    /// [`SpecError`]: ../ckb_chain_spec/enum.SpecError.html
     Spec,
 }
 
-#[derive(Debug)]
-pub struct Error {
-    kind: Context<ErrorKind>,
+def_error_base_on_kind!(Error, ErrorKind, "Top-level ckb error type.");
+
+impl<E> From<E> for AnyError
+where
+    E: StdError + Send + Sync + 'static,
+{
+    fn from(error: E) -> Self {
+        Self(Arc::new(error.into()))
+    }
 }
 
-impl fmt::Display for Error {
+impl Deref for AnyError {
+    type Target = Arc<anyhow::Error>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for AnyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(cause) = self.cause() {
-            if f.alternate() {
-                write!(f, "{}: {}", self.kind(), cause)
-            } else {
-                write!(f, "{}({})", self.kind(), cause)
-            }
-        } else {
-            write!(f, "{}", self.kind())
-        }
+        self.0.fmt(f)
     }
 }
 
-impl From<Context<ErrorKind>> for Error {
-    fn from(inner: Context<ErrorKind>) -> Self {
-        Self { kind: inner }
-    }
-}
-
-impl Fail for Error {
-    fn cause(&self) -> Option<&dyn Fail> {
-        self.kind.cause()
-    }
-
-    fn backtrace(&self) -> Option<&Backtrace> {
-        self.kind.backtrace()
-    }
-}
-
-impl Error {
-    pub fn kind(&self) -> &ErrorKind {
-        self.kind.get_context()
-    }
-
-    pub fn downcast_ref<T: Fail>(&self) -> Option<&T> {
-        self.cause().and_then(|cause| cause.downcast_ref::<T>())
-    }
-
-    pub fn unwrap_cause_or_self(&self) -> &dyn Fail {
-        self.cause().unwrap_or(self)
+impl fmt::Debug for AnyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
     }
 }

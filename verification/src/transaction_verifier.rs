@@ -4,9 +4,9 @@ use crate::TransactionError;
 use ckb_chain_spec::consensus::Consensus;
 use ckb_dao::DaoCalculator;
 use ckb_error::Error;
+use ckb_metrics::{metrics, Timer};
 use ckb_script::TransactionScriptsVerifier;
-use ckb_store::{data_loader_wrapper::DataLoaderWrapper, ChainStore};
-use ckb_traits::BlockMedianTimeContext;
+use ckb_traits::{CellDataProvider, EpochProvider, HeaderProvider};
 use ckb_types::{
     core::{
         cell::{CellMeta, ResolvedTransaction},
@@ -16,22 +16,25 @@ use ckb_types::{
     packed::Byte32,
     prelude::*,
 };
-use lru_cache::LruCache;
+use lru::LruCache;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+/// The time-related TX verification
+///
+/// Contains:
+/// [`MaturityVerifier`](./struct.MaturityVerifier.html)
+/// [`SinceVerifier`](./struct.SinceVerifier.html)
 pub struct TimeRelativeTransactionVerifier<'a, M> {
-    pub maturity: MaturityVerifier<'a>,
-    pub since: SinceVerifier<'a, M>,
+    pub(crate) maturity: MaturityVerifier<'a>,
+    pub(crate) since: SinceVerifier<'a, M>,
 }
 
-impl<'a, M> TimeRelativeTransactionVerifier<'a, M>
-where
-    M: BlockMedianTimeContext,
-{
+impl<'a, DL: HeaderProvider> TimeRelativeTransactionVerifier<'a, DL> {
+    /// Creates a new TimeRelativeTransactionVerifier
     pub fn new(
         rtx: &'a ResolvedTransaction,
-        median_time_context: &'a M,
+        data_loader: &'a DL,
         block_number: BlockNumber,
         epoch_number_with_fraction: EpochNumberWithFraction,
         parent_hash: Byte32,
@@ -45,14 +48,16 @@ where
             ),
             since: SinceVerifier::new(
                 rtx,
-                median_time_context,
+                data_loader,
                 block_number,
                 epoch_number_with_fraction,
+                consensus.median_time_block_count(),
                 parent_hash,
             ),
         }
     }
 
+    /// Perform time-related verification
     pub fn verify(&self) -> Result<(), Error> {
         self.maturity.verify()?;
         self.since.verify()?;
@@ -60,15 +65,25 @@ where
     }
 }
 
+/// Context-independent verification checks for transaction
+///
+/// Basic checks that don't depend on any context
+/// Contains:
+/// - Check for version
+/// - Check for size
+/// - Check inputs and output empty
+/// - Check for duplicate deps
+/// - Check for whether outputs match data
 pub struct NonContextualTransactionVerifier<'a> {
-    pub version: VersionVerifier<'a>,
-    pub size: SizeVerifier<'a>,
-    pub empty: EmptyVerifier<'a>,
-    pub duplicate_deps: DuplicateDepsVerifier<'a>,
-    pub outputs_data_verifier: OutputsDataVerifier<'a>,
+    pub(crate) version: VersionVerifier<'a>,
+    pub(crate) size: SizeVerifier<'a>,
+    pub(crate) empty: EmptyVerifier<'a>,
+    pub(crate) duplicate_deps: DuplicateDepsVerifier<'a>,
+    pub(crate) outputs_data_verifier: OutputsDataVerifier<'a>,
 }
 
 impl<'a> NonContextualTransactionVerifier<'a> {
+    /// Creates a new NonContextualTransactionVerifier
     pub fn new(tx: &'a TransactionView, consensus: &'a Consensus) -> Self {
         NonContextualTransactionVerifier {
             version: VersionVerifier::new(tx, consensus.tx_version()),
@@ -79,6 +94,7 @@ impl<'a> NonContextualTransactionVerifier<'a> {
         }
     }
 
+    /// Perform context-independent verification
     pub fn verify(&self) -> Result<(), Error> {
         self.version.verify()?;
         self.size.verify()?;
@@ -89,28 +105,35 @@ impl<'a> NonContextualTransactionVerifier<'a> {
     }
 }
 
-pub struct ContextualTransactionVerifier<'a, M, CS> {
-    pub maturity: MaturityVerifier<'a>,
-    pub since: SinceVerifier<'a, M>,
-    pub capacity: CapacityVerifier<'a>,
-    pub script: ScriptVerifier<'a, CS>,
-    pub fee_calculator: FeeCalculator<'a, CS>,
+/// Context-dependent verification checks for transaction
+///
+/// Contains:
+/// [`MaturityVerifier`](./struct.MaturityVerifier.html)
+/// [`SinceVerifier`](./struct.SinceVerifier.html)
+/// [`CapacityVerifier`](./struct.CapacityVerifier.html)
+/// [`ScriptVerifier`](./struct.ScriptVerifier.html)
+/// [`FeeCalculator`](./struct.FeeCalculator.html)
+pub struct ContextualTransactionVerifier<'a, DL> {
+    pub(crate) maturity: MaturityVerifier<'a>,
+    pub(crate) since: SinceVerifier<'a, DL>,
+    pub(crate) capacity: CapacityVerifier<'a>,
+    pub(crate) script: ScriptVerifier<'a, DL>,
+    pub(crate) fee_calculator: FeeCalculator<'a, DL>,
 }
 
-impl<'a, M, CS> ContextualTransactionVerifier<'a, M, CS>
+impl<'a, DL> ContextualTransactionVerifier<'a, DL>
 where
-    M: BlockMedianTimeContext,
-    CS: ChainStore<'a>,
+    DL: CellDataProvider + HeaderProvider + EpochProvider,
 {
+    /// Creates a new ContextualTransactionVerifier
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rtx: &'a ResolvedTransaction,
-        median_time_context: &'a M,
         block_number: BlockNumber,
         epoch_number_with_fraction: EpochNumberWithFraction,
         parent_hash: Byte32,
         consensus: &'a Consensus,
-        chain_store: &'a CS,
+        data_loader: &'a DL,
     ) -> Self {
         ContextualTransactionVerifier {
             maturity: MaturityVerifier::new(
@@ -118,85 +141,96 @@ where
                 epoch_number_with_fraction,
                 consensus.cellbase_maturity(),
             ),
-            script: ScriptVerifier::new(rtx, chain_store),
+            script: ScriptVerifier::new(rtx, data_loader),
             capacity: CapacityVerifier::new(rtx, consensus.dao_type_hash()),
             since: SinceVerifier::new(
                 rtx,
-                median_time_context,
+                data_loader,
                 block_number,
                 epoch_number_with_fraction,
+                consensus.median_time_block_count(),
                 parent_hash,
             ),
-            fee_calculator: FeeCalculator::new(rtx, &consensus, &chain_store),
+            fee_calculator: FeeCalculator::new(rtx, consensus, data_loader),
         }
     }
 
-    pub fn verify(&self, max_cycles: Cycle) -> Result<CacheEntry, Error> {
+    /// Perform context-dependent verification, return a `Result` to `CacheEntry`
+    ///
+    /// skip script verify will result in the return value cycle always is zero
+    pub fn verify(&self, max_cycles: Cycle, skip_script_verify: bool) -> Result<CacheEntry, Error> {
+        let timer = Timer::start();
         self.maturity.verify()?;
         self.capacity.verify()?;
         self.since.verify()?;
-        let cycles = self.script.verify(max_cycles)?;
+        let cycles = if skip_script_verify {
+            0
+        } else {
+            self.script.verify(max_cycles)?
+        };
         let fee = self.fee_calculator.transaction_fee()?;
+        metrics!(timing, "ckb.contextual_verified_tx", timer.stop());
         Ok(CacheEntry::new(cycles, fee))
     }
 }
 
-pub struct TransactionVerifier<'a, M, CS> {
-    pub non_contextual: NonContextualTransactionVerifier<'a>,
-    pub contextual: ContextualTransactionVerifier<'a, M, CS>,
+/// Full tx verification checks
+///
+/// Contains:
+/// [`NonContextualTransactionVerifier`](./struct.NonContextualTransactionVerifier.html)
+/// [`ContextualTransactionVerifier`](./struct.ContextualTransactionVerifier.html)
+pub struct TransactionVerifier<'a, DL> {
+    pub(crate) non_contextual: NonContextualTransactionVerifier<'a>,
+    pub(crate) contextual: ContextualTransactionVerifier<'a, DL>,
 }
 
-impl<'a, M, CS> TransactionVerifier<'a, M, CS>
-where
-    M: BlockMedianTimeContext,
-    CS: ChainStore<'a>,
-{
+impl<'a, DL: HeaderProvider + CellDataProvider + EpochProvider> TransactionVerifier<'a, DL> {
+    /// Creates a new TransactionVerifier
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rtx: &'a ResolvedTransaction,
-        median_time_context: &'a M,
         block_number: BlockNumber,
         epoch_number_with_fraction: EpochNumberWithFraction,
         parent_hash: Byte32,
         consensus: &'a Consensus,
-        chain_store: &'a CS,
+        data_loader: &'a DL,
     ) -> Self {
         TransactionVerifier {
             non_contextual: NonContextualTransactionVerifier::new(&rtx.transaction, consensus),
             contextual: ContextualTransactionVerifier::new(
                 rtx,
-                median_time_context,
                 block_number,
                 epoch_number_with_fraction,
                 parent_hash,
                 consensus,
-                chain_store,
+                data_loader,
             ),
         }
     }
 
+    /// Perform all tx verification
     pub fn verify(&self, max_cycles: Cycle) -> Result<CacheEntry, Error> {
         self.non_contextual.verify()?;
-        self.contextual.verify(max_cycles)
+        self.contextual.verify(max_cycles, false)
     }
 }
 
-pub struct FeeCalculator<'a, CS> {
+pub struct FeeCalculator<'a, DL> {
     transaction: &'a ResolvedTransaction,
     consensus: &'a Consensus,
-    chain_store: &'a CS,
+    data_loader: &'a DL,
 }
 
-impl<'a, CS: ChainStore<'a>> FeeCalculator<'a, CS> {
+impl<'a, DL: CellDataProvider + HeaderProvider + EpochProvider> FeeCalculator<'a, DL> {
     fn new(
         transaction: &'a ResolvedTransaction,
         consensus: &'a Consensus,
-        chain_store: &'a CS,
+        data_loader: &'a DL,
     ) -> Self {
         Self {
             transaction,
             consensus,
-            chain_store,
+            data_loader,
         }
     }
 
@@ -205,7 +239,7 @@ impl<'a, CS: ChainStore<'a>> FeeCalculator<'a, CS> {
         if self.transaction.is_cellbase() {
             Ok(Capacity::zero())
         } else {
-            DaoCalculator::new(&self.consensus, self.chain_store).transaction_fee(&self.transaction)
+            DaoCalculator::new(&self.consensus, self.data_loader).transaction_fee(&self.transaction)
         }
     }
 }
@@ -262,22 +296,32 @@ impl<'a> SizeVerifier<'a> {
     }
 }
 
-pub struct ScriptVerifier<'a, CS> {
-    chain_store: &'a CS,
+/// Perform rules verification describe in CKB script, also check cycles limit
+///
+/// See:
+/// - [ckb-vm](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0003-ckb-vm/0003-ckb-vm.md)
+/// - [vm-cycle-limits](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0014-vm-cycle-limits/0014-vm-cycle-limits.md)
+pub struct ScriptVerifier<'a, DL> {
+    data_loader: &'a DL,
     resolved_transaction: &'a ResolvedTransaction,
 }
 
-impl<'a, CS: ChainStore<'a>> ScriptVerifier<'a, CS> {
-    pub fn new(resolved_transaction: &'a ResolvedTransaction, chain_store: &'a CS) -> Self {
+impl<'a, DL: CellDataProvider + HeaderProvider> ScriptVerifier<'a, DL> {
+    /// Creates a new ScriptVerifier
+    pub fn new(resolved_transaction: &'a ResolvedTransaction, data_loader: &'a DL) -> Self {
         ScriptVerifier {
-            chain_store,
+            data_loader,
             resolved_transaction,
         }
     }
 
+    /// Perform script verification
     pub fn verify(&self, max_cycles: Cycle) -> Result<Cycle, Error> {
-        let data_loader = DataLoaderWrapper::new(self.chain_store);
-        TransactionScriptsVerifier::new(&self.resolved_transaction, &data_loader).verify(max_cycles)
+        let timer = Timer::start();
+        let cycle = TransactionScriptsVerifier::new(&self.resolved_transaction, self.data_loader)
+            .verify(max_cycles)?;
+        metrics!(timing, "ckb.verified_script", timer.stop());
+        Ok(cycle)
     }
 }
 
@@ -293,12 +337,12 @@ impl<'a> EmptyVerifier<'a> {
     pub fn verify(&self) -> Result<(), Error> {
         if self.transaction.inputs().is_empty() {
             Err(TransactionError::Empty {
-                source: TransactionErrorSource::Inputs,
+                inner: TransactionErrorSource::Inputs,
             }
             .into())
         } else if self.transaction.outputs().is_empty() && !self.transaction.is_cellbase() {
             Err(TransactionError::Empty {
-                source: TransactionErrorSource::Outputs,
+                inner: TransactionErrorSource::Outputs,
             }
             .into())
         } else {
@@ -307,6 +351,9 @@ impl<'a> EmptyVerifier<'a> {
     }
 }
 
+/// MaturityVerifier
+///
+/// If input or dep prev is cellbase, check that it's matured
 pub struct MaturityVerifier<'a> {
     transaction: &'a ResolvedTransaction,
     epoch: EpochNumberWithFraction,
@@ -348,7 +395,7 @@ impl<'a> MaturityVerifier<'a> {
             .position(cellbase_immature)
         {
             return Err(TransactionError::CellbaseImmaturity {
-                source: TransactionErrorSource::Inputs,
+                inner: TransactionErrorSource::Inputs,
                 index,
             }
             .into());
@@ -361,7 +408,7 @@ impl<'a> MaturityVerifier<'a> {
             .position(cellbase_immature)
         {
             return Err(TransactionError::CellbaseImmaturity {
-                source: TransactionErrorSource::CellDeps,
+                inner: TransactionErrorSource::CellDeps,
                 index,
             }
             .into());
@@ -449,7 +496,7 @@ impl<'a> CapacityVerifier<'a> {
             if output.is_lack_of_capacity(data_occupied_capacity)? {
                 return Err((TransactionError::InsufficientCellCapacity {
                     index,
-                    source: TransactionErrorSource::Outputs,
+                    inner: TransactionErrorSource::Outputs,
                     capacity: output.capacity().unpack(),
                     occupied_capacity: output.occupied_capacity(data_occupied_capacity)?,
                 })
@@ -484,31 +531,41 @@ const METRIC_TYPE_FLAG_MASK: u64 = 0x6000_0000_0000_0000;
 const VALUE_MASK: u64 = 0x00ff_ffff_ffff_ffff;
 const REMAIN_FLAGS_BITS: u64 = 0x1f00_0000_0000_0000;
 
+/// Metric represent value
 pub enum SinceMetric {
+    /// The metric_flag is 00, `value` can be explained as a block number or a relative block number.
     BlockNumber(u64),
+    /// The metric_flag is 01, value can be explained as an absolute epoch or relative epoch.
     EpochNumberWithFraction(EpochNumberWithFraction),
+    /// The metric_flag is 10, value can be explained as a block timestamp(unix time) or a relative
     Timestamp(u64),
 }
 
-/// RFC 0017
+/// The struct define wrapper for (unsigned 64-bit integer) tx field since
+///
+/// See [tx-since](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0017-tx-valid-since/0017-tx-valid-since.md)
 #[derive(Copy, Clone, Debug)]
 pub struct Since(pub u64);
 
 impl Since {
+    /// Whether since represented absolute form
     pub fn is_absolute(self) -> bool {
         self.0 & LOCK_TYPE_FLAG == 0
     }
 
+    /// Whether since represented relative form
     #[inline]
     pub fn is_relative(self) -> bool {
         !self.is_absolute()
     }
 
+    /// Whether since flag is valid
     pub fn flags_is_valid(self) -> bool {
         (self.0 & REMAIN_FLAGS_BITS == 0)
             && ((self.0 & METRIC_TYPE_FLAG_MASK) != METRIC_TYPE_FLAG_MASK)
     }
 
+    /// Extracts a `SinceMetric` from an unsigned 64-bit integer since
     pub fn extract_metric(self) -> Option<SinceMetric> {
         let value = self.0 & VALUE_MASK;
         match self.0 & METRIC_TYPE_FLAG_MASK {
@@ -525,54 +582,57 @@ impl Since {
     }
 }
 
-/// https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0017-tx-valid-since/0017-tx-valid-since.md#detailed-specification
-pub struct SinceVerifier<'a, M> {
+/// SinceVerifier
+///
+/// Rules detail see:
+/// [tx-since-specification](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0017-tx-valid-since/0017-tx-valid-since.md#detailed-specification
+pub struct SinceVerifier<'a, DL> {
     rtx: &'a ResolvedTransaction,
-    block_median_time_context: &'a M,
+    data_loader: &'a DL,
     block_number: BlockNumber,
     epoch_number_with_fraction: EpochNumberWithFraction,
     parent_hash: Byte32,
+    median_block_count: usize,
     median_timestamps_cache: RefCell<LruCache<Byte32, u64>>,
 }
 
-impl<'a, M> SinceVerifier<'a, M>
-where
-    M: BlockMedianTimeContext,
-{
+impl<'a, DL: HeaderProvider> SinceVerifier<'a, DL> {
     pub fn new(
         rtx: &'a ResolvedTransaction,
-        block_median_time_context: &'a M,
+        data_loader: &'a DL,
         block_number: BlockNumber,
         epoch_number_with_fraction: EpochNumberWithFraction,
+        median_block_count: usize,
         parent_hash: Byte32,
     ) -> Self {
         let median_timestamps_cache = RefCell::new(LruCache::new(rtx.resolved_inputs.len()));
         SinceVerifier {
             rtx,
-            block_median_time_context,
+            data_loader,
             block_number,
             epoch_number_with_fraction,
             parent_hash,
+            median_block_count,
             median_timestamps_cache,
         }
     }
 
     fn parent_median_time(&self, block_hash: &Byte32) -> u64 {
-        let (_, _, parent_hash) = self
-            .block_median_time_context
-            .timestamp_and_parent(block_hash);
+        let (_, _, parent_hash) = self.data_loader.timestamp_and_parent(block_hash);
         self.block_median_time(&parent_hash)
     }
 
     fn block_median_time(&self, block_hash: &Byte32) -> u64 {
-        if let Some(median_time) = self.median_timestamps_cache.borrow().get(block_hash) {
+        if let Some(median_time) = self.median_timestamps_cache.borrow().peek(block_hash) {
             return *median_time;
         }
 
-        let median_time = self.block_median_time_context.block_median_time(block_hash);
+        let median_time = self
+            .data_loader
+            .block_median_time(block_hash, self.median_block_count);
         self.median_timestamps_cache
             .borrow_mut()
-            .insert(block_hash.clone(), median_time);
+            .put(block_hash.clone(), median_time);
         median_time
     }
 

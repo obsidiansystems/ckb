@@ -1,4 +1,5 @@
-use crate::{Net, Node, Spec};
+use crate::util::mining::mine;
+use crate::{Node, Spec};
 use ckb_types::core::{BlockView, EpochNumberWithFraction};
 use ckb_types::prelude::*;
 
@@ -11,9 +12,7 @@ use ckb_types::prelude::*;
 pub struct UncleInheritFromForkBlock;
 
 impl Spec for UncleInheritFromForkBlock {
-    crate::name!("uncle_inherit_from_fork_block");
-
-    crate::setup!(num_nodes: 2, connect_all: false);
+    crate::setup!(num_nodes: 2);
 
     // Case: A uncle inherited from a fork-block in side fork is invalid, because that breaks
     //       the uncle rule "B1's parent is either B2's ancestor or embedded in B2
@@ -24,9 +23,9 @@ impl Spec for UncleInheritFromForkBlock {
     //    4. Add all the fork-blocks as uncle blocks into the chain and re-submit block with
     //       `uncle` should be success
 
-    fn run(&self, net: &mut Net) {
-        let target_node = &net.nodes[0];
-        let feed_node = &net.nodes[1];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let target_node = &nodes[0];
+        let feed_node = &nodes[1];
 
         let uncle = construct_uncle(target_node);
 
@@ -70,9 +69,7 @@ impl Spec for UncleInheritFromForkBlock {
 pub struct UncleInheritFromForkUncle;
 
 impl Spec for UncleInheritFromForkUncle {
-    crate::name!("uncle_inherit_from_fork_uncle");
-
-    crate::setup!(num_nodes: 2, connect_all: false);
+    crate::setup!(num_nodes: 2);
 
     // Case: A uncle inherited from a fork-uncle in side fork is invalid, because that breaks
     //       the uncle rule "B1's parent is either B2's ancestor or embedded in B2
@@ -83,9 +80,9 @@ impl Spec for UncleInheritFromForkUncle {
     //       should be failed
     //    4. Add all the fork-blocks as uncle blocks into the chain and now re-submit block with
     //       `uncle_child` should be success
-    fn run(&self, net: &mut Net) {
-        let target_node = &net.nodes[0];
-        let feed_node = &net.nodes[1];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let target_node = &nodes[0];
+        let feed_node = &nodes[1];
 
         let uncle_parent = construct_uncle(target_node);
         target_node.submit_block(&uncle_parent);
@@ -147,16 +144,14 @@ impl Spec for UncleInheritFromForkUncle {
 pub struct PackUnclesIntoEpochStarting;
 
 impl Spec for PackUnclesIntoEpochStarting {
-    crate::name!("pack_uncles_into_epoch_starting");
-
     // Case: Miner should not add uncles into the epoch starting
     //    1. Chain grow until CURRENT_EPOCH_END - 1 and submit uncle;
     //    2. Expect the next mining block(CURRENT_EPOCH_END) contains the uncle;
     //    3. Submit CURRENT_EPOCH_END block with empty uncles;
     //    4. Expect the next mining block(NEXT_EPOCH_START) not contains uncle.
 
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
         let uncle = construct_uncle(node);
         let next_epoch_start = {
             let current_epoch = node.rpc_client().get_current_epoch();
@@ -164,7 +159,7 @@ impl Spec for PackUnclesIntoEpochStarting {
         };
         let current_epoch_end = next_epoch_start - 1;
 
-        node.generate_blocks((current_epoch_end - node.get_tip_block_number() - 1) as usize);
+        mine(node, current_epoch_end - node.get_tip_block_number() - 1);
         node.submit_block(&uncle);
 
         let block = node.new_block(None, None, None);
@@ -188,9 +183,9 @@ impl Spec for PackUnclesIntoEpochStarting {
 
 // Convenient way to construct an uncle block
 fn construct_uncle(node: &Node) -> BlockView {
-    node.generate_block(); // Ensure exit IBD mode
+    mine(&node, 1); // Ensure exit IBD mode
     let uncle = node.construct_uncle();
-    node.generate_block();
+    mine(&node, 1);
 
     uncle
 }

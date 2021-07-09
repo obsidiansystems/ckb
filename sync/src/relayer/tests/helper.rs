@@ -1,19 +1,20 @@
 use crate::{Relayer, SyncShared};
-use ckb_chain::{chain::ChainService, switch::Switch};
+use ckb_app_config::NetworkConfig;
+use ckb_chain::chain::ChainService;
 use ckb_chain_spec::consensus::ConsensusBuilder;
-use ckb_fee_estimator::FeeRate;
 use ckb_network::{
-    bytes::Bytes as P2pBytes, Behaviour, CKBProtocolContext, Error, Peer, PeerIndex, ProtocolId,
+    bytes::Bytes as P2pBytes, Behaviour, CKBProtocolContext, DefaultExitHandler, Error,
+    NetworkController, NetworkService, NetworkState, Peer, PeerIndex, ProtocolId, SupportProtocols,
     TargetSession,
 };
-use ckb_shared::shared::{Shared, SharedBuilder};
+use ckb_shared::{Shared, SharedBuilder};
 use ckb_store::ChainStore;
 use ckb_test_chain_utils::always_success_cell;
 use ckb_types::prelude::*;
 use ckb_types::{
     bytes::Bytes,
     core::{
-        capacity_bytes, BlockBuilder, BlockNumber, Capacity, EpochNumberWithFraction,
+        capacity_bytes, BlockBuilder, BlockNumber, Capacity, EpochNumberWithFraction, FeeRate,
         HeaderBuilder, HeaderView, TransactionBuilder, TransactionView,
     },
     packed::{
@@ -23,6 +24,7 @@ use ckb_types::{
     utilities::difficulty_to_compact,
     U256,
 };
+use ckb_verification_traits::Switch;
 use faketime::{self, unix_time_as_millis};
 use std::{cell::RefCell, future::Future, pin::Pin, sync::Arc, time::Duration};
 
@@ -44,11 +46,12 @@ pub(crate) fn new_index_transaction(index: usize) -> IndexTransaction {
 
 pub(crate) fn new_header_builder(shared: &Shared, parent: &HeaderView) -> HeaderBuilder {
     let parent_hash = parent.hash();
-    let parent_epoch = shared.store().get_block_epoch(&parent_hash).unwrap();
     let snapshot = shared.snapshot();
     let epoch = snapshot
-        .next_epoch_ext(snapshot.consensus(), &parent_epoch, parent)
-        .unwrap_or(parent_epoch);
+        .consensus()
+        .next_epoch_ext(&parent, &snapshot.as_data_provider())
+        .unwrap()
+        .epoch();
     HeaderBuilder::default()
         .parent_hash(parent_hash)
         .number((parent.number() + 1).pack())
@@ -92,6 +95,35 @@ pub(crate) fn new_transaction(
         .build()
 }
 
+pub(crate) fn dummy_network(shared: &Shared) -> NetworkController {
+    let tmp_dir = tempfile::Builder::new().tempdir().unwrap();
+    let config = NetworkConfig {
+        max_peers: 19,
+        max_outbound_peers: 5,
+        path: tmp_dir.path().to_path_buf(),
+        ping_interval_secs: 15,
+        ping_timeout_secs: 20,
+        connect_outbound_interval_secs: 1,
+        discovery_local_address: true,
+        bootnode_mode: true,
+        reuse: true,
+        ..Default::default()
+    };
+
+    let network_state =
+        Arc::new(NetworkState::from_config(config).expect("Init network state failed"));
+    NetworkService::new(
+        network_state,
+        vec![],
+        vec![],
+        shared.consensus().identify_name(),
+        "test".to_string(),
+        DefaultExitHandler::default(),
+    )
+    .start(shared.async_handle())
+    .expect("Start network service failed")
+}
+
 pub(crate) fn build_chain(tip: BlockNumber) -> (Relayer, OutPoint) {
     let (always_success_cell, always_success_cell_data, always_success_script) =
         always_success_cell();
@@ -103,7 +135,7 @@ pub(crate) fn build_chain(tip: BlockNumber) -> (Relayer, OutPoint) {
         .build();
     let always_success_out_point = OutPoint::new(always_success_tx.hash(), 0);
 
-    let (shared, table) = {
+    let (shared, mut pack) = {
         let genesis = BlockBuilder::default()
             .timestamp(unix_time_as_millis().pack())
             .compact_target(difficulty_to_compact(U256::from(1000u64)).pack())
@@ -113,13 +145,17 @@ pub(crate) fn build_chain(tip: BlockNumber) -> (Relayer, OutPoint) {
             .genesis_block(genesis)
             .cellbase_maturity(EpochNumberWithFraction::new(0, 0, 1))
             .build();
-        SharedBuilder::default()
+        SharedBuilder::with_temp_db()
             .consensus(consensus)
             .build()
             .unwrap()
     };
+
+    let network = dummy_network(&shared);
+    pack.take_tx_pool_builder().start(network);
+
     let chain_controller = {
-        let chain_service = ChainService::new(shared.clone(), table);
+        let chain_service = ChainService::new(shared.clone(), pack.take_proposal_table());
         chain_service.start::<&str>(None)
     };
 
@@ -151,7 +187,11 @@ pub(crate) fn build_chain(tip: BlockNumber) -> (Relayer, OutPoint) {
             .expect("processing block should be ok");
     }
 
-    let sync_shared = Arc::new(SyncShared::new(shared, Default::default()));
+    let sync_shared = Arc::new(SyncShared::new(
+        shared,
+        Default::default(),
+        pack.take_relay_tx_receiver(),
+    ));
     (
         Relayer::new(
             chain_controller,
@@ -163,13 +203,32 @@ pub(crate) fn build_chain(tip: BlockNumber) -> (Relayer, OutPoint) {
     )
 }
 
-#[derive(Default)]
-pub(crate) struct MockProtocalContext {
-    pub sent_messages: RefCell<Vec<(ProtocolId, PeerIndex, P2pBytes)>>,
-    pub sent_messages_to: RefCell<Vec<(PeerIndex, P2pBytes)>>,
+pub(crate) struct MockProtocolContext {
+    protocol: SupportProtocols,
+    sent_messages: RefCell<Vec<(ProtocolId, PeerIndex, P2pBytes)>>,
 }
 
-impl CKBProtocolContext for MockProtocalContext {
+impl MockProtocolContext {
+    pub(crate) fn new(protocol: SupportProtocols) -> Self {
+        Self {
+            protocol,
+            sent_messages: Default::default(),
+        }
+    }
+
+    pub(crate) fn has_sent(
+        &self,
+        protocol_id: ProtocolId,
+        peer_index: PeerIndex,
+        data: P2pBytes,
+    ) -> bool {
+        self.sent_messages
+            .borrow()
+            .contains(&(protocol_id, peer_index, data))
+    }
+}
+
+impl CKBProtocolContext for MockProtocolContext {
     fn set_notify(&self, _interval: Duration, _token: u64) -> Result<(), Error> {
         unimplemented!()
     }
@@ -209,8 +268,8 @@ impl CKBProtocolContext for MockProtocalContext {
         Ok(())
     }
     fn send_message_to(&self, peer_index: PeerIndex, data: P2pBytes) -> Result<(), Error> {
-        self.sent_messages_to.borrow_mut().push((peer_index, data));
-        Ok(())
+        let protocol_id = self.protocol_id();
+        self.send_message(protocol_id, peer_index, data)
     }
 
     fn filter_broadcast(&self, _target: TargetSession, _data: P2pBytes) -> Result<(), Error> {
@@ -235,9 +294,6 @@ impl CKBProtocolContext for MockProtocalContext {
         unimplemented!();
     }
     fn protocol_id(&self) -> ProtocolId {
-        unimplemented!();
-    }
-    fn send_paused(&self) -> bool {
-        false
+        self.protocol.protocol_id()
     }
 }

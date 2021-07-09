@@ -1,11 +1,15 @@
-use failure::Fail;
+use ckb_error::prelude::*;
 
-#[derive(Debug, PartialEq, Clone, Eq, Fail)]
+/// TODO(doc): @quake
+#[derive(Error, Debug, PartialEq, Clone, Eq)]
 pub enum Error {
-    #[fail(display = "InvalidInput")]
+    /// TODO(doc): @quake
+    #[error("InvalidInput")]
     InvalidInput,
-    #[fail(display = "InvalidOutput")]
+    /// TODO(doc): @quake
+    #[error("InvalidOutput")]
     InvalidOutput,
-    #[fail(display = "InvalidParams {}", _0)]
+    /// TODO(doc): @quake
+    #[error("InvalidParams {0}")]
     InvalidParams(String),
 }

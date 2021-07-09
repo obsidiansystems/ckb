@@ -1,12 +1,15 @@
 [package]
 name = "ckb-proposal-table"
-version = "0.36.0-pre"
+version = "0.43.0"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "The CKB proposal table"
+homepage = "https://github.com/nervosnetwork/ckb"
+repository = "https://github.com/nervosnetwork/ckb"
 
 [dependencies]
-ckb-logger = { path = "../logger" }
-ckb-chain-spec = { path = "../../spec" }
-ckb-types = { path = "../types" }
+ckb-logger = { path = "../logger", version = "= 0.43.0" }
+ckb-chain-spec = { path = "../../spec", version = "= 0.43.0" }
+ckb-types = { path = "../types", version = "= 0.43.0" }

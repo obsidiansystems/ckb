@@ -22,23 +22,24 @@ use self::transaction_hashes_process::TransactionHashesProcess;
 use self::transactions_process::TransactionsProcess;
 use crate::block_status::BlockStatus;
 use crate::types::{ActiveChain, SyncShared};
-use crate::{Status, StatusCode, BAD_MESSAGE_BAN_TIME};
+use crate::utils::send_message_to;
+use crate::{Status, StatusCode};
 use ckb_chain::chain::ChainController;
-use ckb_fee_estimator::FeeRate;
+use ckb_constant::sync::BAD_MESSAGE_BAN_TIME;
 use ckb_logger::{debug_target, error_target, info_target, trace_target, warn_target};
 use ckb_metrics::metrics;
 use ckb_network::{
-    bytes::Bytes, tokio, CKBProtocolContext, CKBProtocolHandler, PeerIndex, TargetSession,
+    bytes::Bytes, tokio, CKBProtocolContext, CKBProtocolHandler, PeerIndex, SupportProtocols,
+    TargetSession,
 };
 use ckb_types::core::BlockView;
 use ckb_types::{
-    core::{self, Cycle},
+    core::{self, Cycle, FeeRate},
     packed::{self, Byte32, ProposalShortId},
     prelude::*,
 };
 use ckb_util::Mutex;
 use faketime::unix_time_as_millis;
-use ratelimit_meter::KeyedRateLimiter;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,6 +53,12 @@ pub const MAX_RELAY_PEERS: usize = 128;
 pub const MAX_RELAY_TXS_NUM_PER_BATCH: usize = 32767;
 pub const MAX_RELAY_TXS_BYTES_PER_BATCH: usize = 1024 * 1024;
 
+type RateLimiter<T> = governor::RateLimiter<
+    T,
+    governor::state::keyed::DefaultKeyedStateStore<T>,
+    governor::clock::DefaultClock,
+>;
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum ReconstructionResult {
     Block(BlockView),
@@ -60,16 +67,23 @@ pub enum ReconstructionResult {
     Error(Status),
 }
 
+/// Relayer protocol handle
 #[derive(Clone)]
 pub struct Relayer {
     chain: ChainController,
     pub(crate) shared: Arc<SyncShared>,
     pub(crate) min_fee_rate: FeeRate,
     pub(crate) max_tx_verify_cycles: Cycle,
-    rate_limiter: Arc<Mutex<KeyedRateLimiter<(PeerIndex, u32)>>>,
+    rate_limiter: Arc<Mutex<RateLimiter<(PeerIndex, u32)>>>,
 }
 
 impl Relayer {
+    /// Init relay protocol handle
+    ///
+    /// This is a runtime relay protocol shared state, and any relay messages will be processed and forwarded by it
+    ///
+    /// min_fee_rate: Default transaction fee unit, can be modified by configuration file
+    /// max_tx_verify_cycles: Maximum transaction consumption allowed by default, can be modified by configuration file
     pub fn new(
         chain: ChainController,
         shared: Arc<SyncShared>,
@@ -78,9 +92,8 @@ impl Relayer {
     ) -> Self {
         // setup a rate limiter keyed by peer and message type that lets through 30 requests per second
         // current max rps is 10 (ASK_FOR_TXS_TOKEN / TX_PROPOSAL_TOKEN), 30 is a flexible hard cap with buffer
-        let rate_limiter = Arc::new(Mutex::new(KeyedRateLimiter::per_second(
-            std::num::NonZeroU32::new(30).unwrap(),
-        )));
+        let quota = governor::Quota::per_second(std::num::NonZeroU32::new(30).unwrap());
+        let rate_limiter = Arc::new(Mutex::new(RateLimiter::keyed(quota)));
         Relayer {
             chain,
             shared,
@@ -90,27 +103,26 @@ impl Relayer {
         }
     }
 
+    /// Get shared state
     pub fn shared(&self) -> &Arc<SyncShared> {
         &self.shared
     }
 
-    fn try_process<'r>(
+    fn try_process(
         &mut self,
         nc: Arc<dyn CKBProtocolContext + Sync>,
         peer: PeerIndex,
-        message: packed::RelayMessageUnionReader<'r>,
+        message: packed::RelayMessageUnionReader<'_>,
     ) -> Status {
         // CompactBlock will be verified by POW, it's OK to skip rate limit checking.
-        let should_check_rate = match message {
-            packed::RelayMessageUnionReader::CompactBlock(_) => false,
-            _ => true,
-        };
+        let should_check_rate =
+            !matches!(message, packed::RelayMessageUnionReader::CompactBlock(_));
 
         if should_check_rate
             && self
                 .rate_limiter
                 .lock()
-                .check((peer, message.item_id()))
+                .check_key(&(peer, message.item_id()))
                 .is_err()
         {
             return StatusCode::TooManyRequests.with_context(message.item_name());
@@ -122,7 +134,7 @@ impl Relayer {
             }
             packed::RelayMessageUnionReader::RelayTransactions(reader) => {
                 if reader.check_data() {
-                    TransactionsProcess::new(reader, self, nc, peer).execute()
+                    TransactionsProcess::new(reader, self, peer).execute()
                 } else {
                     StatusCode::ProtocolMessageIsMalformed
                         .with_context("RelayTransactions is invalid")
@@ -154,19 +166,25 @@ impl Relayer {
         }
     }
 
-    fn process<'r>(
+    fn process(
         &mut self,
         nc: Arc<dyn CKBProtocolContext + Sync>,
         peer: PeerIndex,
-        message: packed::RelayMessageUnionReader<'r>,
+        message: packed::RelayMessageUnionReader<'_>,
     ) {
         let item_name = message.item_name();
+        let item_bytes = message.as_slice().len() as u64;
         let status = self.try_process(Arc::clone(&nc), peer, message);
 
-        metrics!(counter, "ckb-net.received", 1, "action" => "relay", "item" => item_name.to_owned());
-        if !status.is_ok() {
-            metrics!(counter, "ckb-net.status", 1, "action" => "relay", "status" => status.tag());
-        }
+        metrics!(
+            counter,
+            "ckb.messages_bytes",
+            item_bytes,
+            "direction" => "in",
+            "protocol_id" => SupportProtocols::Relay.protocol_id().value().to_string(),
+            "item_id" => message.item_id().to_string(),
+            "status" => (status.code() as u16).to_string(),
+        );
 
         if let Some(ban_time) = status.should_ban() {
             error_target!(
@@ -197,6 +215,7 @@ impl Relayer {
         }
     }
 
+    /// Request the transaction corresponding to the proposal id from the specified node
     pub fn request_proposal_txs(
         &self,
         nc: &dyn CKBProtocolContext,
@@ -232,21 +251,15 @@ impl Relayer {
                 .proposals(to_ask_proposals.clone().pack())
                 .build();
             let message = packed::RelayMessage::new_builder().set(content).build();
-
-            if let Err(err) = nc.send_message_to(peer, message.as_bytes()) {
-                debug_target!(
-                    crate::LOG_TARGET_RELAY,
-                    "relayer send GetBlockProposal error {:?}",
-                    err,
-                );
+            if !send_message_to(nc, peer, &message).is_ok() {
                 self.shared()
                     .state()
                     .remove_inflight_proposals(&to_ask_proposals);
             }
-            crate::relayer::metrics_counter_send(message.to_enum().item_name());
         }
     }
 
+    /// Accept a new block from network
     pub fn accept_block(
         &self,
         nc: &dyn CKBProtocolContext,
@@ -278,15 +291,16 @@ impl Relayer {
             let cb = packed::CompactBlock::build_from_block(&boxed, &HashSet::new());
             let message = packed::RelayMessage::new_builder().set(cb).build();
 
-            let selected_peers: Vec<PeerIndex> = nc
+            let selected_peers: HashSet<PeerIndex> = nc
                 .connected_peers()
                 .into_iter()
                 .filter(|target_peer| peer != *target_peer)
                 .take(MAX_RELAY_PEERS)
                 .collect();
-            if let Err(err) =
-                nc.quick_filter_broadcast(TargetSession::Multi(selected_peers), message.as_bytes())
-            {
+            if let Err(err) = nc.quick_filter_broadcast(
+                TargetSession::Filter(Box::new(move |id| selected_peers.contains(id))),
+                message.as_bytes(),
+            ) {
                 debug_target!(
                     crate::LOG_TARGET_RELAY,
                     "relayer send block when accept block error: {:?}",
@@ -296,6 +310,7 @@ impl Relayer {
         }
     }
 
+    /// Reorganize the full block according to the compact block/txs/uncles
     // nodes should attempt to reconstruct the full block by taking the prefilledtxn transactions
     // from the original CompactBlock message and placing them in the marked positions,
     // then for each short transaction ID from the original compact_block message, in order,
@@ -514,19 +529,14 @@ impl Relayer {
                 .transactions(txs.into_iter().map(|tx| tx.data()).pack())
                 .build();
             let message = packed::RelayMessage::new_builder().set(content).build();
-
-            if let Err(err) = nc.send_message_to(peer_index, message.as_bytes()) {
-                debug_target!(
-                    crate::LOG_TARGET_RELAY,
-                    "relayer send BlockProposal error: {:?}",
-                    err,
-                );
+            let status = send_message_to(nc, peer_index, &message);
+            if !status.is_ok() {
+                ckb_logger::error!("break relaying transactions, status: {:?}", status);
             }
-            crate::relayer::metrics_counter_send(message.to_enum().item_name());
         }
     }
 
-    // Ask for relay transaction by hash from all peers
+    /// Ask for relay transaction by hash from all peers
     pub fn ask_for_txs(&self, nc: &dyn CKBProtocolContext) {
         let state = self.shared().state();
         for (peer, peer_state) in state.peers().state.write().iter_mut() {
@@ -555,51 +565,54 @@ impl Relayer {
                     .tx_hashes(tx_hashes.pack())
                     .build();
                 let message = packed::RelayMessage::new_builder().set(content).build();
-
-                if let Err(err) = nc.send_message_to(*peer, message.as_bytes()) {
-                    debug_target!(
-                        crate::LOG_TARGET_RELAY,
-                        "relayer send Transaction error: {:?}",
-                        err,
-                    );
+                let status = send_message_to(nc, *peer, &message);
+                if !status.is_ok() {
+                    ckb_logger::error!("break asking for transactions, status: {:?}", status);
                 }
-                crate::relayer::metrics_counter_send(message.to_enum().item_name());
             }
         }
     }
 
-    // Send bulk of tx hashes to selected peers
+    /// Send bulk of tx hashes to selected peers
     pub fn send_bulk_of_tx_hashes(&self, nc: &dyn CKBProtocolContext) {
+        const BUFFER_SIZE: usize = 42;
+
         let connected_peers = nc.connected_peers();
         if connected_peers.is_empty() {
             return;
         }
+
+        let tx_hashes = self
+            .shared
+            .state()
+            .take_relay_tx_hashes(MAX_RELAY_TXS_NUM_PER_BATCH);
         let mut selected: HashMap<PeerIndex, Vec<Byte32>> = HashMap::default();
         {
-            let peer_tx_hashes = self.shared.state().take_tx_hashes();
             let mut known_txs = self.shared.state().known_txs();
-
-            for (peer_index, tx_hashes) in peer_tx_hashes.into_iter() {
-                for tx_hash in tx_hashes {
-                    for &peer in connected_peers
-                        .iter()
-                        .filter(|&target_peer| {
-                            known_txs.insert(*target_peer, tx_hash.clone())
-                                && (peer_index != *target_peer)
-                        })
-                        .take(MAX_RELAY_PEERS)
-                    {
-                        let hashes = selected
-                            .entry(peer)
-                            .or_insert_with(|| Vec::with_capacity(MAX_RELAY_TXS_NUM_PER_BATCH));
-                        if hashes.len() < MAX_RELAY_TXS_NUM_PER_BATCH {
-                            hashes.push(tx_hash.clone());
+            for (origin_peer, hash) in &tx_hashes {
+                for target in &connected_peers {
+                    match origin_peer {
+                        Some(origin) => {
+                            // broadcast tx hash to all connected peers except origin peer
+                            if known_txs.insert(*target, hash.clone()) && (origin != target) {
+                                let hashes = selected
+                                    .entry(*target)
+                                    .or_insert_with(|| Vec::with_capacity(BUFFER_SIZE));
+                                hashes.push(hash.clone());
+                            }
+                        }
+                        None => {
+                            // since this tx is submitted through local rpc, it is assumed to be a new tx for all connected peers
+                            let hashes = selected
+                                .entry(*target)
+                                .or_insert_with(|| Vec::with_capacity(BUFFER_SIZE));
+                            hashes.push(hash.clone());
+                            self.shared.state().mark_as_known_tx(hash.clone());
                         }
                     }
                 }
             }
-        };
-
+        }
         for (peer, hashes) in selected {
             let content = packed::RelayTransactionHashes::new_builder()
                 .tx_hashes(hashes.pack())
@@ -664,12 +677,15 @@ impl CKBProtocolHandler for Relayer {
             msg.item_name(),
             peer_index
         );
-        let sentry_hub = sentry::Hub::current();
-        let _scope_guard = sentry_hub.push_scope();
-        sentry_hub.configure_scope(|scope| {
-            scope.set_tag("p2p.protocol", "relayer");
-            scope.set_tag("p2p.message", msg.item_name());
-        });
+        #[cfg(feature = "with_sentry")]
+        {
+            let sentry_hub = sentry::Hub::current();
+            let _scope_guard = sentry_hub.push_scope();
+            sentry_hub.configure_scope(|scope| {
+                scope.set_tag("p2p.protocol", "relayer");
+                scope.set_tag("p2p.message", msg.item_name());
+            });
+        }
 
         let start_time = Instant::now();
         self.process(nc, peer_index, msg.as_reader());
@@ -688,6 +704,7 @@ impl CKBProtocolHandler for Relayer {
         peer_index: PeerIndex,
         version: &str,
     ) {
+        self.shared().state().peers().relay_connected(peer_index);
         info_target!(
             crate::LOG_TARGET_RELAY,
             "RelayProtocol({}).connected peer={}",
@@ -702,8 +719,8 @@ impl CKBProtocolHandler for Relayer {
             "RelayProtocol.disconnected peer={}",
             peer_index
         );
-        // remove all rate limiter keys that have been expireable for 1 minutes:
-        self.rate_limiter.lock().cleanup(Duration::from_secs(60));
+        // Retains all keys in the rate limiter that were used recently enough.
+        self.rate_limiter.lock().retain_recent();
     }
 
     fn notify(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>, token: u64) {
@@ -735,8 +752,4 @@ impl CKBProtocolHandler for Relayer {
             start_time.elapsed()
         );
     }
-}
-
-pub(self) fn metrics_counter_send(item_name: &str) {
-    metrics!(counter, "ckb-net.sent", 1, "action" => "relay", "item" => item_name.to_owned());
 }

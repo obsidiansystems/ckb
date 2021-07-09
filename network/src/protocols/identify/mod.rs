@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,10 +8,10 @@ use p2p::{
     bytes::Bytes,
     context::{ProtocolContext, ProtocolContextMutRef, SessionContext},
     multiaddr::{Multiaddr, Protocol},
-    secio::{PeerId, PublicKey},
+    secio::PeerId,
     service::{SessionType, TargetProtocol},
     traits::ServiceProtocol,
-    utils::{is_reachable, multiaddr_to_socketaddr},
+    utils::{extract_peer_id, is_reachable, multiaddr_to_socketaddr},
     ProtocolId, SessionId,
 };
 
@@ -51,10 +52,7 @@ pub enum MisbehaveResult {
 
 impl MisbehaveResult {
     pub fn is_disconnect(&self) -> bool {
-        match self {
-            MisbehaveResult::Disconnect => true,
-            _ => false,
-        }
+        matches!(self, MisbehaveResult::Disconnect)
     }
 }
 
@@ -75,7 +73,7 @@ pub trait Callback: Clone + Send {
     /// Get local listen addresses
     fn local_listen_addrs(&mut self) -> Vec<Multiaddr>;
     /// Add remote peer's listen addresses
-    fn add_remote_listen_addrs(&mut self, peer: &PeerId, addrs: Vec<Multiaddr>);
+    fn add_remote_listen_addrs(&mut self, id: SessionId, addrs: Vec<Multiaddr>);
     /// Add our address observed by remote peer
     fn add_observed_addr(
         &mut self,
@@ -148,7 +146,7 @@ impl<T: Callback> IdentifyProtocol<T> {
                 })
                 .collect::<Vec<_>>();
             self.callback
-                .add_remote_listen_addrs(&info.peer_id, reachable_addrs);
+                .add_remote_listen_addrs(session.id, reachable_addrs);
             MisbehaveResult::Continue
         }
     }
@@ -251,17 +249,8 @@ impl<T: Callback> ServiceProtocol for IdentifyProtocol<T> {
             .cloned()
             .collect();
 
-        let observed_addr = session
-            .address
-            .iter()
-            .filter(|proto| match proto {
-                Protocol::P2P(_) => false,
-                _ => true,
-            })
-            .collect::<Multiaddr>();
-
         let identify = self.callback.identify();
-        let data = IdentifyMessage::new(listen_addrs, observed_addr, identify).encode();
+        let data = IdentifyMessage::new(listen_addrs, session.address.clone(), identify).encode();
         let _ = context.quick_send_message(data);
     }
 
@@ -363,12 +352,10 @@ impl IdentifyCallback {
     }
 
     fn listen_addrs(&self) -> Vec<Multiaddr> {
-        let mut addrs = self.network_state.public_addrs(MAX_RETURN_LISTEN_ADDRS * 2);
-        addrs.sort_by(|a, b| a.1.cmp(&b.1));
+        let addrs = self.network_state.public_addrs(MAX_RETURN_LISTEN_ADDRS * 2);
         addrs
             .into_iter()
             .take(MAX_RETURN_LISTEN_ADDRS)
-            .map(|(addr, _)| addr)
             .collect::<Vec<_>>()
     }
 }
@@ -421,15 +408,9 @@ impl Callback for IdentifyCallback {
                 };
 
                 if context.session.ty.is_outbound() {
-                    let peer_id = context
-                        .session
-                        .remote_pubkey
-                        .as_ref()
-                        .map(PublicKey::peer_id)
-                        .expect("Secio must enabled");
                     if self
                         .network_state
-                        .with_peer_registry(|reg| reg.is_feeler(&peer_id))
+                        .with_peer_registry(|reg| reg.is_feeler(&context.session.address))
                     {
                         let _ = context.open_protocols(
                             context.session.id,
@@ -439,12 +420,12 @@ impl Callback for IdentifyCallback {
                         registry_client_version(client_version);
 
                         // The remote end can support all local protocols.
-                        let protos = self
-                            .network_state
-                            .get_protocol_ids(|id| id != SupportProtocols::Feeler.protocol_id());
-
-                        let _ = context
-                            .open_protocols(context.session.id, TargetProtocol::Multi(protos));
+                        let _ = context.open_protocols(
+                            context.session.id,
+                            TargetProtocol::Filter(Box::new(|id| {
+                                id != &SupportProtocols::Feeler.protocol_id()
+                            })),
+                        );
                     } else {
                         // The remote end cannot support all local protocols.
                         return MisbehaveResult::Disconnect;
@@ -462,24 +443,21 @@ impl Callback for IdentifyCallback {
         self.listen_addrs()
     }
 
-    fn add_remote_listen_addrs(&mut self, peer_id: &PeerId, addrs: Vec<Multiaddr>) {
+    fn add_remote_listen_addrs(&mut self, id: SessionId, addrs: Vec<Multiaddr>) {
         trace!(
-            "got remote listen addrs from peer_id={:?}, addrs={:?}",
-            peer_id,
+            "got remote listen addrs from session={:?}, addrs={:?}",
+            id,
             addrs,
         );
         self.network_state.with_peer_registry_mut(|reg| {
-            if let Some(peer) = reg
-                .get_key_by_peer_id(peer_id)
-                .and_then(|session_id| reg.get_peer_mut(session_id))
-            {
+            if let Some(peer) = reg.get_peer_mut(id) {
                 peer.listened_addrs = addrs.clone();
             }
         });
         self.network_state.with_peer_store_mut(|peer_store| {
             for addr in addrs {
-                if let Err(err) = peer_store.add_addr(peer_id.clone(), addr) {
-                    debug!("Failed to add addrs to peer_store {:?} {:?}", err, peer_id);
+                if let Err(err) = peer_store.add_addr(addr.clone()) {
+                    debug!("Failed to add addrs to peer_store {:?} {:?}", err, addr);
                 }
             }
         })
@@ -488,7 +466,7 @@ impl Callback for IdentifyCallback {
     fn add_observed_addr(
         &mut self,
         peer_id: &PeerId,
-        addr: Multiaddr,
+        mut addr: Multiaddr,
         ty: SessionType,
     ) -> MisbehaveResult {
         debug!(
@@ -509,19 +487,27 @@ impl Callback for IdentifyCallback {
             return MisbehaveResult::Continue;
         }
 
+        if extract_peer_id(&addr).is_none() {
+            addr.push(Protocol::P2P(Cow::Borrowed(
+                self.network_state.local_peer_id().as_bytes(),
+            )))
+        }
+
+        let source_addr = addr.clone();
         let observed_addrs_iter = self
             .listen_addrs()
             .into_iter()
             .filter_map(|listen_addr| multiaddr_to_socketaddr(&listen_addr))
             .map(|socket_addr| {
                 addr.iter()
-                    .filter_map(|proto| match proto {
-                        Protocol::P2P(_) => None,
-                        Protocol::TCP(_) => Some(Protocol::TCP(socket_addr.port())),
-                        value => Some(value),
+                    .map(|proto| match proto {
+                        Protocol::Tcp(_) => Protocol::Tcp(socket_addr.port()),
+                        value => value,
                     })
                     .collect::<Multiaddr>()
-            });
+            })
+            .chain(::std::iter::once(source_addr));
+
         self.network_state.add_observed_addrs(observed_addrs_iter);
         // NOTE: for future usage
         MisbehaveResult::Continue
@@ -563,7 +549,7 @@ impl Identify {
         &self.encode_data
     }
 
-    fn verify<'a>(&self, data: &'a [u8]) -> Option<(Flags, String)> {
+    fn verify(&self, data: &[u8]) -> Option<(Flags, String)> {
         let reader = packed::IdentifyReader::from_slice(data).ok()?;
 
         let name = reader.name().as_utf8().ok()?.to_owned();

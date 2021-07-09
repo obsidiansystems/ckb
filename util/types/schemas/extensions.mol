@@ -64,53 +64,29 @@ struct TransactionKey {
     index:          BeUint32,
 }
 
+struct NumberHash {
+    number:         Uint64,
+    block_hash:     Byte32,
+}
+
 struct TransactionInfo {
     block_number:   Uint64,
     block_epoch:    Uint64,
     key:            TransactionKey,
 }
 
-table TransactionMeta {
-    block_hash:     Byte32,
-    block_number:   Uint64,
-    epoch_number:   Uint64,
-    len:            Uint32,
-    bits:           Bytes,
-    cellbase:       Bool,
+table CellEntry {
+    output:                CellOutput,
+    block_hash:            Byte32,
+    block_number:          Uint64,
+    block_epoch:           Uint64,
+    index:                 Uint32,
+    data_size:             Uint64,
 }
 
-/* Types for Indexer */
-
-table TransactionPoint {
-    tx_hash:        Byte32,
-    block_number:   Uint64,
-    index:          Uint32,
-}
-
-option TransactionPointOpt (TransactionPoint);
-
-table LockHashCellOutput {
-    lock_hash:      Byte32,
-    block_number:   Uint64,
-    cell_output:    CellOutputOpt,
-}
-
-struct LockHashIndex {
-    lock_hash:      Byte32,
-    block_number:   BeUint64,
-    tx_hash:        Byte32,
-    index:          BeUint32,
-}
-
-table LockHashIndexState {
-    block_number:   Uint64,
-    block_hash:     Byte32,
-}
-
-table LiveCellOutput {
-    cell_output: CellOutput,
-    output_data_len: Uint64,
-    cellbase: Bool,
+table CellDataEntry {
+    output_data:           Bytes,
+    output_data_hash:      Byte32,
 }
 
 /* Types for Network/Relay */

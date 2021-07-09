@@ -1,8 +1,13 @@
+//! The ckb proposal-table design for two-step-transaction-confirmation
+
 use ckb_chain_spec::consensus::ProposalWindow;
 use ckb_types::{core::BlockNumber, packed::ProposalShortId};
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 
+/// A view captures point-time proposal set, representing on-chain proposed transaction pool,
+/// stored in the memory so that there is no need to fetch on hard disk, create by ProposalTable finalize method
+/// w_close and w_far define the closest and farthest on-chain distance between a transaction’s proposal and commitment.
 #[derive(Default, Clone, Debug)]
 pub struct ProposalView {
     pub(crate) gap: HashSet<ProposalShortId>,
@@ -10,27 +15,33 @@ pub struct ProposalView {
 }
 
 impl ProposalView {
+    /// Create new ProposalView
     pub fn new(gap: HashSet<ProposalShortId>, set: HashSet<ProposalShortId>) -> ProposalView {
         ProposalView { gap, set }
     }
 
+    /// Return proposals between w_close and tip
     pub fn gap(&self) -> &HashSet<ProposalShortId> {
         &self.gap
     }
 
+    /// Return proposals between w_close and w_far
     pub fn set(&self) -> &HashSet<ProposalShortId> {
         &self.set
     }
 
+    /// Returns true if the proposals set between w_close and w_far contains the id.
     pub fn contains_proposed(&self, id: &ProposalShortId) -> bool {
         self.set.contains(id)
     }
 
+    /// Returns true if the proposals set between w_close and tip contains the id.
     pub fn contains_gap(&self, id: &ProposalShortId) -> bool {
         self.gap.contains(id)
     }
 }
 
+/// A Table record proposals set in number-ids pairs
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct ProposalTable {
     pub(crate) table: BTreeMap<BlockNumber, HashSet<ProposalShortId>>,
@@ -38,6 +49,7 @@ pub struct ProposalTable {
 }
 
 impl ProposalTable {
+    /// Create new ProposalTable from ProposalWindow
     pub fn new(proposal_window: ProposalWindow) -> Self {
         ProposalTable {
             proposal_window,
@@ -45,20 +57,36 @@ impl ProposalTable {
         }
     }
 
-    // If the TABLE did not have this value present, true is returned.
-    // If the TABLE did have this value present, false is returned
+    /// Inserts a number-ids pair into the table.
+    /// If the TABLE did not have this number present, true is returned.
+    /// If the map did have this number present, the proposal set is updated.
     pub fn insert(&mut self, number: BlockNumber, ids: HashSet<ProposalShortId>) -> bool {
         self.table.insert(number, ids).is_none()
     }
 
+    /// Removes a proposal set from the table,　returning the set at the number if the number was previously in the table
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ckb_chain_spec::consensus::ProposalWindow;
+    /// use ckb_proposal_table::ProposalTable;
+    ///
+    /// let window = ProposalWindow(2, 10);
+    /// let mut table = ProposalTable::new(window);
+    /// assert_eq!(table.remove(1), None);
+    /// ```
     pub fn remove(&mut self, number: BlockNumber) -> Option<HashSet<ProposalShortId>> {
         self.table.remove(&number)
     }
 
+    /// Return referent of internal BTreeMap contains all proposal set
     pub fn all(&self) -> &BTreeMap<BlockNumber, HashSet<ProposalShortId>> {
         &self.table
     }
 
+    /// Update table by proposal window move froward, drop outdated proposal set
+    /// Return removed proposal ids set and new ProposalView
     pub fn finalize(
         &mut self,
         origin: &ProposalView,
@@ -132,7 +160,7 @@ impl ProposalTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::iter::{self, FromIterator};
+    use std::iter;
 
     #[test]
     fn test_finalize() {
@@ -162,10 +190,7 @@ mod tests {
         let (removed_ids, mut view) = table.finalize(&ProposalView::default(), 1);
         assert!(removed_ids.is_empty());
         assert!(view.set().is_empty());
-        assert_eq!(
-            view.gap(),
-            &HashSet::from_iter(iter::once(proposals[1].clone()))
-        );
+        assert_eq!(view.gap(), &iter::once(proposals[1].clone()).collect());
 
         // in window
         for i in 2..=10usize {
@@ -173,13 +198,13 @@ mod tests {
             let c = i + 1;
             assert_eq!(
                 new_view.gap(),
-                &HashSet::from_iter(proposals[(c - 2 + 1)..=i].iter().cloned())
+                &proposals[(c - 2 + 1)..=i].iter().cloned().collect()
             );
 
             let s = ::std::cmp::max(1, c.saturating_sub(10));
             assert_eq!(
                 new_view.set(),
-                &HashSet::from_iter(proposals[s..=(c - 2)].iter().cloned())
+                &proposals[s..=(c - 2)].iter().cloned().collect()
             );
 
             assert!(removed_ids.is_empty());
@@ -188,28 +213,16 @@ mod tests {
 
         // finalize 11
         let (removed_ids, new_view) = table.finalize(&view, 11);
-        assert_eq!(
-            removed_ids,
-            HashSet::from_iter(iter::once(proposals[1].clone()))
-        );
-        assert_eq!(
-            new_view.set(),
-            &HashSet::from_iter(proposals[2..=10].iter().cloned())
-        );
+        assert_eq!(removed_ids, iter::once(proposals[1].clone()).collect());
+        assert_eq!(new_view.set(), &proposals[2..=10].iter().cloned().collect());
         assert!(new_view.gap().is_empty());
 
         view = new_view;
 
         // finalize 12
         let (removed_ids, new_view) = table.finalize(&view, 12);
-        assert_eq!(
-            removed_ids,
-            HashSet::from_iter(iter::once(proposals[2].clone()))
-        );
-        assert_eq!(
-            new_view.set(),
-            &HashSet::from_iter(proposals[3..=10].iter().cloned())
-        );
+        assert_eq!(removed_ids, iter::once(proposals[2].clone()).collect());
+        assert_eq!(new_view.set(), &proposals[3..=10].iter().cloned().collect());
         assert!(new_view.gap().is_empty());
     }
 }

@@ -1,23 +1,31 @@
-use crate::header_verifier::HeaderResolver;
-pub use crate::transaction_verifier::NonContextualTransactionVerifier;
-use crate::{BlockErrorKind, CellbaseError, Verifier};
+use crate::{
+    transaction_verifier::NonContextualTransactionVerifier, BlockErrorKind, CellbaseError,
+};
 use ckb_chain_spec::consensus::Consensus;
 use ckb_error::Error;
-use ckb_store::ChainStore;
 use ckb_types::{
-    core::{BlockView, HeaderView},
+    core::BlockView,
     packed::{CellInput, CellbaseWitness},
     prelude::*,
 };
+use ckb_verification_traits::Verifier;
 use std::collections::HashSet;
 
-//TODO: cellbase, witness
+/// Block verifier that are independent of context.
+///
+/// Contains:
+/// - [`CellbaseVerifier`](./struct.CellbaseVerifier.html)
+/// - [`BlockBytesVerifier`](./struct.BlockBytesVerifier.html)
+/// - [`BlockProposalsLimitVerifier`](./struct.BlockProposalsLimitVerifier.html)
+/// - [`DuplicateVerifier`](./struct.DuplicateVerifier.html)
+/// - [`MerkleRootVerifier`](./struct.MerkleRootVerifier.html)
 #[derive(Clone)]
 pub struct BlockVerifier<'a> {
     consensus: &'a Consensus,
 }
 
 impl<'a> BlockVerifier<'a> {
+    /// Constructs a BlockVerifier
     pub fn new(consensus: &'a Consensus) -> Self {
         BlockVerifier { consensus }
     }
@@ -37,10 +45,18 @@ impl<'a> Verifier for BlockVerifier<'a> {
     }
 }
 
+/// Cellbase verifier
+///
+/// First transaction must be cellbase, the rest must not be.
+/// Cellbase outputs/outputs_data len must le 1
+/// Cellbase output data must be empty
+/// Cellbase output type_ must be empty
+/// Cellbase has only one dummy input. The since must be set to the block number.
 #[derive(Clone)]
 pub struct CellbaseVerifier {}
 
 impl CellbaseVerifier {
+    /// Constructs a CellbaseVerifier
     pub fn new() -> Self {
         CellbaseVerifier {}
     }
@@ -114,6 +130,9 @@ impl CellbaseVerifier {
     }
 }
 
+/// DuplicateVerifier
+///
+/// Invalidating duplicate transaction or proposal
 #[derive(Clone)]
 pub struct DuplicateVerifier {}
 
@@ -141,6 +160,9 @@ impl DuplicateVerifier {
     }
 }
 
+/// MerkleRootVerifier
+///
+/// Check the merkle root
 #[derive(Clone, Default)]
 pub struct MerkleRootVerifier {}
 
@@ -162,35 +184,9 @@ impl MerkleRootVerifier {
     }
 }
 
-pub struct HeaderResolverWrapper<'a> {
-    header: &'a HeaderView,
-    parent: Option<HeaderView>,
-}
-
-impl<'a> HeaderResolverWrapper<'a> {
-    pub fn new<CS>(header: &'a HeaderView, store: &'a CS) -> Self
-    where
-        CS: ChainStore<'a>,
-    {
-        let parent = store.get_block_header(&header.data().raw().parent_hash());
-        HeaderResolverWrapper { parent, header }
-    }
-
-    pub fn build(header: &'a HeaderView, parent: Option<HeaderView>) -> Self {
-        HeaderResolverWrapper { parent, header }
-    }
-}
-
-impl<'a> HeaderResolver for HeaderResolverWrapper<'a> {
-    fn header(&self) -> &HeaderView {
-        self.header
-    }
-
-    fn parent(&self) -> Option<&HeaderView> {
-        self.parent.as_ref()
-    }
-}
-
+/// BlockProposalsLimitVerifier.
+///
+/// Check block proposal limit.
 #[derive(Clone)]
 pub struct BlockProposalsLimitVerifier {
     block_proposals_limit: u64,
@@ -213,6 +209,9 @@ impl BlockProposalsLimitVerifier {
     }
 }
 
+/// BlockBytesVerifier.
+///
+/// Check block size limit.
 #[derive(Clone)]
 pub struct BlockBytesVerifier {
     block_bytes_limit: u64,
@@ -237,15 +236,21 @@ impl BlockBytesVerifier {
     }
 }
 
+/// Context-independent verification checks for block transactions
+///
+/// Basic checks that don't depend on any context
+/// See [`NonContextualTransactionVerifier`](./struct.NonContextualBlockTxsVerifier.html)
 pub struct NonContextualBlockTxsVerifier<'a> {
     consensus: &'a Consensus,
 }
 
 impl<'a> NonContextualBlockTxsVerifier<'a> {
+    /// Creates a new NonContextualBlockTxsVerifier
     pub fn new(consensus: &'a Consensus) -> Self {
         NonContextualBlockTxsVerifier { consensus }
     }
 
+    /// Perform context-independent verification checks for block transactions
     pub fn verify(&self, block: &BlockView) -> Result<Vec<()>, Error> {
         block
             .transactions()

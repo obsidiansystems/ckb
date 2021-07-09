@@ -13,18 +13,32 @@ use ckb_types::{
 use std::cmp;
 use std::collections::HashSet;
 
+/// Block Reward Calculator.
+/// A Block reward calculator is used to calculate the total block reward for the target block.
+///
+/// For block(i) miner, CKB issues its total block reward by enforcing the
+/// block(i + PROPOSAL_WINDOW.farthest + 1)'s cellbase:
+///   - cellbase output capacity is block(i)'s total block reward
+///   - cellbase output lock is block(i)'s miner provided lock in block(i) 's cellbase output-data
+/// Conventionally, We say that block(i) is block(i + PROPOSAL_WINDOW.farthest + 1)'s target block.
+///
+/// Target block's total reward consists of four parts:
+///  - primary block reward
+///  - secondary block reward
+///  - proposals reward
+///  - transactions fees
 pub struct RewardCalculator<'a, CS> {
-    pub consensus: &'a Consensus,
-    pub store: &'a CS,
+    consensus: &'a Consensus,
+    store: &'a CS,
 }
 
 impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
+    /// Creates a new `RewardCalculator`.
     pub fn new(consensus: &'a Consensus, store: &'a CS) -> Self {
         RewardCalculator { consensus, store }
     }
 
-    /// `RewardCalculator` is used to calculate block finalize target's reward according to the parent header.
-    /// block reward consists of four parts: base block reward, tx fee, proposal reward, and secondary block reward.
+    /// Calculates the current block number based on `parent,` locates the current block's target block, returns the target block miner's lock, and total block reward.
     pub fn block_reward_to_finalize(
         &self,
         parent: &HeaderView,
@@ -42,6 +56,7 @@ impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
         self.block_reward_internal(&target, parent)
     }
 
+    /// Returns the `target` block miner's lock and total block reward.
     pub fn block_reward_for_target(
         &self,
         target: &HeaderView,
@@ -106,9 +121,9 @@ impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
         Ok((target_lock, block_reward))
     }
 
-    /// Miner get (tx_fee - 40% of tx fee) for tx commitment.
-    /// Be careful of the rounding, tx_fee - 40% of tx fee is different from 60% of tx fee.
-    pub fn txs_fees(&self, target: &HeaderView) -> Result<Capacity, Error> {
+    // Miner get (tx_fee - 40% of tx fee) for tx commitment.
+    // Be careful of the rounding, tx_fee - 40% of tx fee is different from 60% of tx fee.
+    fn txs_fees(&self, target: &HeaderView) -> Result<Capacity, Error> {
         let consensus = self.consensus;
         let target_ext = self
             .store
@@ -141,11 +156,7 @@ impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
     ///         \____________/
     ///
 
-    pub fn proposal_reward(
-        &self,
-        parent: &HeaderView,
-        target: &HeaderView,
-    ) -> Result<Capacity, Error> {
+    fn proposal_reward(&self, parent: &HeaderView, target: &HeaderView) -> Result<Capacity, Error> {
         let mut target_proposals = self.get_proposal_ids_by_hash(&target.hash());
 
         let proposal_window = self.consensus.tx_proposal_window();
@@ -200,7 +211,7 @@ impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
             }
         }
 
-        while index.number() > competing_commit_start {
+        while index.number() > competing_commit_start && !target_proposals.is_empty() {
             index = store
                 .get_block_header(&index.data().raw().parent_hash())
                 .expect("header stored");
@@ -237,7 +248,8 @@ impl<'a, CS: ChainStore<'a>> RewardCalculator<'a, CS> {
     }
 
     fn base_block_reward(&self, target: &HeaderView) -> Result<(Capacity, Capacity), Error> {
-        let calculator = DaoCalculator::new(&self.consensus, self.store);
+        let data_loader = self.store.as_data_provider();
+        let calculator = DaoCalculator::new(&self.consensus, &data_loader);
         let primary_block_reward = calculator.primary_block_reward(target)?;
         let secondary_block_reward = calculator.secondary_block_reward(target)?;
 
@@ -263,8 +275,9 @@ mod tests {
     use super::RewardCalculator;
     use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder, ProposalWindow};
     use ckb_db::RocksDB;
-    use ckb_occupied_capacity::AsCapacity;
-    use ckb_store::{ChainDB, ChainStore, COLUMNS};
+    use ckb_db_schema::COLUMNS;
+    use ckb_occupied_capacity::IntoCapacity;
+    use ckb_store::{ChainDB, ChainStore};
     use ckb_types::{
         core::{BlockBuilder, BlockExt, HeaderBuilder, TransactionBuilder},
         packed::ProposalShortId,
@@ -327,10 +340,10 @@ mod tests {
 
         let block = BlockBuilder::default().build();
         let ext_tx_fees = vec![
-            100u32.as_capacity(),
-            20u32.as_capacity(),
-            33u32.as_capacity(),
-            34u32.as_capacity(),
+            100u32.into_capacity(),
+            20u32.into_capacity(),
+            33u32.into_capacity(),
+            34u32.into_capacity(),
         ];
         let ext = BlockExt {
             received_at: block.timestamp(),
@@ -353,7 +366,7 @@ mod tests {
             .map(|x| x - x * 4 / 10)
             .sum();
 
-        assert_eq!(txs_fees, expected.as_capacity());
+        assert_eq!(txs_fees, expected.into_capacity());
     }
 
     // Earliest proposer get 40% of tx fee as reward when tx committed
@@ -489,9 +502,9 @@ mod tests {
             .build();
 
         let ext_tx_fees_14 = vec![
-            100u32.as_capacity(),
-            20u32.as_capacity(),
-            33u32.as_capacity(),
+            100u32.into_capacity(),
+            20u32.into_capacity(),
+            33u32.into_capacity(),
         ];
 
         let ext_14 = BlockExt {
@@ -503,7 +516,7 @@ mod tests {
         };
 
         // txs(p4)
-        let ext_tx_fees_15 = vec![300u32.as_capacity()];
+        let ext_tx_fees_15 = vec![300u32.into_capacity()];
 
         let ext_15 = BlockExt {
             received_at: block_15.timestamp(),
@@ -514,7 +527,7 @@ mod tests {
         };
 
         // txs(p5, p6)
-        let ext_tx_fees_18 = vec![41u32.as_capacity(), 999u32.as_capacity()];
+        let ext_tx_fees_18 = vec![41u32.into_capacity(), 999u32.into_capacity()];
 
         let ext_18 = BlockExt {
             received_at: block_18.timestamp(),
@@ -555,6 +568,6 @@ mod tests {
         // target's earliest proposals: p4, p5, p6
         let expected: u32 = [300u32, 41u32, 999u32].iter().map(|x| x * 4 / 10).sum();
 
-        assert_eq!(proposal_reward, expected.as_capacity());
+        assert_eq!(proposal_reward, expected.into_capacity());
     }
 }

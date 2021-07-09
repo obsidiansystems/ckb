@@ -1,47 +1,46 @@
 use crate::block_status::BlockStatus;
 use crate::orphan_block_pool::OrphanBlockPool;
-use crate::{
-    BLOCK_DOWNLOAD_TIMEOUT, FAST_INDEX, HEADERS_DOWNLOAD_HEADERS_PER_SECOND,
-    HEADERS_DOWNLOAD_INSPECT_WINDOW, HEADERS_DOWNLOAD_TOLERABLE_BIAS_FOR_SINGLE_SAMPLE,
-    INIT_BLOCKS_IN_TRANSIT_PER_PEER, LOW_INDEX, MAX_BLOCKS_IN_TRANSIT_PER_PEER, MAX_HEADERS_LEN,
-    MAX_TIP_AGE, NORMAL_INDEX, POW_INTERVAL, RETRY_ASK_TX_TIMEOUT_INCREASE, SUSPEND_SYNC_TIME,
-    TIME_TRACE_SIZE,
-};
+use crate::utils::is_internal_db_error;
+use crate::{FAST_INDEX, LOW_INDEX, NORMAL_INDEX, TIME_TRACE_SIZE};
 use ckb_app_config::SyncConfig;
 use ckb_chain::chain::ChainController;
 use ckb_chain_spec::consensus::Consensus;
+use ckb_channel::Receiver;
+use ckb_constant::sync::{
+    BLOCK_DOWNLOAD_TIMEOUT, HEADERS_DOWNLOAD_HEADERS_PER_SECOND, HEADERS_DOWNLOAD_INSPECT_WINDOW,
+    HEADERS_DOWNLOAD_TOLERABLE_BIAS_FOR_SINGLE_SAMPLE, INIT_BLOCKS_IN_TRANSIT_PER_PEER,
+    MAX_BLOCKS_IN_TRANSIT_PER_PEER, MAX_HEADERS_LEN, MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT,
+    POW_INTERVAL, RETRY_ASK_TX_TIMEOUT_INCREASE, SUSPEND_SYNC_TIME,
+};
+use ckb_error::Error as CKBError;
 use ckb_logger::{debug, debug_target, error, trace};
-use ckb_metrics::{metrics, Timer};
+use ckb_metrics::metrics;
 use ckb_network::{CKBProtocolContext, PeerIndex, SupportProtocols};
 use ckb_shared::{shared::Shared, Snapshot};
 use ckb_store::{ChainDB, ChainStore};
+use ckb_traits::HeaderProvider;
 use ckb_types::{
     core::{self, BlockNumber, EpochExt},
     packed::{self, Byte32},
     prelude::*,
-    U256,
+    H256, U256,
 };
-use ckb_util::shrink_to_fit;
-use ckb_util::LinkedHashSet;
-use ckb_util::{Mutex, MutexGuard};
-use ckb_util::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use ckb_verification::HeaderResolverWrapper;
-use failure::Error as FailureError;
+use ckb_util::{shrink_to_fit, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use ckb_verification_traits::Switch;
 use faketime::unix_time_as_millis;
-use lru_cache::LruCache;
-use std::cmp;
+use lru::LruCache;
 use std::collections::{btree_map::Entry, BTreeMap, HashMap, HashSet};
-use std::fmt;
 use std::hash::Hash;
-use std::mem;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{cmp, fmt, iter, mem};
 
 mod header_map;
 
+use crate::utils::send_message;
 pub use header_map::HeaderMapLru as HeaderMap;
 
 const FILTER_SIZE: usize = 20000;
@@ -55,7 +54,7 @@ const TX_ASKED_SIZE: usize = TX_FILTER_SIZE;
 const ORPHAN_BLOCK_SIZE: usize = 1024;
 // 2 ** 13 < 6 * 1800 < 2 ** 14
 const ONE_DAY_BLOCK_NUMBER: u64 = 8192;
-const SHRINK_THREHOLD: usize = 300;
+const SHRINK_THRESHOLD: usize = 300;
 
 // State used to enforce CHAIN_SYNC_TIMEOUT
 // Only in effect for connections that are outbound, non-manual,
@@ -216,6 +215,7 @@ pub struct PeerState {
     pub sync_started: bool,
     pub headers_sync_controller: Option<HeadersSyncController>,
     pub peer_flags: PeerFlags,
+    sync_connected: bool,
     pub disconnect: bool,
     pub chain_sync: ChainSyncState,
     // The key is a `timeout`, means do not ask the tx before `timeout`.
@@ -237,6 +237,7 @@ impl PeerState {
             sync_started: false,
             headers_sync_controller: None,
             peer_flags,
+            sync_connected: false,
             disconnect: false,
             chain_sync: ChainSyncState::default(),
             tx_ask_for_map: BTreeMap::default(),
@@ -249,7 +250,8 @@ impl PeerState {
 
     pub fn can_sync(&self, now: u64, ibd: bool) -> bool {
         // only sync with protect/whitelist peer in IBD
-        ((self.peer_flags.is_protect || self.peer_flags.is_whitelist) || !ibd)
+        self.sync_connected
+            && ((self.peer_flags.is_protect || self.peer_flags.is_whitelist) || !ibd)
             && !self.sync_started
             && self
                 .chain_sync
@@ -341,9 +343,14 @@ impl PeerState {
     }
 }
 
-#[derive(Default)]
 pub struct Filter<T: Eq + Hash> {
     inner: LruCache<T, ()>,
+}
+
+impl<T: Eq + Hash> Default for Filter<T> {
+    fn default() -> Self {
+        Filter::new(FILTER_SIZE)
+    }
 }
 
 impl<T: Eq + Hash> Filter<T> {
@@ -354,11 +361,11 @@ impl<T: Eq + Hash> Filter<T> {
     }
 
     pub fn contains(&self, item: &T) -> bool {
-        self.inner.contains_key(item)
+        self.inner.contains(item)
     }
 
     pub fn insert(&mut self, item: T) -> bool {
-        self.inner.insert(item, ()).is_none()
+        self.inner.put(item, ()).is_none()
     }
 }
 
@@ -374,7 +381,7 @@ impl KnownFilter {
     pub fn insert(&mut self, index: PeerIndex, hash: Byte32) -> bool {
         self.inner
             .entry(index)
-            .or_insert_with(|| Filter::new(FILTER_SIZE))
+            .or_insert_with(Filter::default)
             .insert(hash)
     }
 }
@@ -555,6 +562,7 @@ pub struct InflightBlocks {
     pub(crate) restart_number: BlockNumber,
     time_analyzer: TimeAnalyzer,
     pub(crate) adjustment: bool,
+    pub(crate) protect_num: usize,
 }
 
 impl Default for InflightBlocks {
@@ -567,6 +575,7 @@ impl Default for InflightBlocks {
             restart_number: 0,
             time_analyzer: TimeAnalyzer::default(),
             adjustment: true,
+            protect_num: MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT,
         }
     }
 }
@@ -672,8 +681,17 @@ impl InflightBlocks {
 
     pub fn prune(&mut self, tip: BlockNumber) -> HashSet<PeerIndex> {
         let now = unix_time_as_millis();
-        let prev_count = self.total_inflight_count();
         let mut disconnect_list = HashSet::new();
+        // Since statistics are currently disturbed by the processing block time, when the number
+        // of transactions increases, the node will be accidentally evicted.
+        //
+        // Especially on machines with poor CPU performance, the node connection will be frequently
+        // disconnected due to statistics.
+        //
+        // In order to protect the decentralization of the network and ensure the survival of low-performance
+        // nodes, the penalty mechanism will be closed when the number of download nodes is less than the number of protected nodes
+        let should_punish = self.download_schedulers.len() > self.protect_num;
+        let adjustment = self.adjustment;
 
         let trace = &mut self.trace_number;
         let download_schedulers = &mut self.download_schedulers;
@@ -693,7 +711,9 @@ impl InflightBlocks {
             if value.timestamp + BLOCK_DOWNLOAD_TIMEOUT < now {
                 if let Some(set) = download_schedulers.get_mut(&value.peer) {
                     set.hashes.remove(key);
-                    set.punish(2);
+                    if should_punish {
+                        set.punish(2);
+                    }
                 };
                 if !trace.is_empty() {
                     trace.remove(&key);
@@ -733,13 +753,17 @@ impl InflightBlocks {
             if now > 1000 + *time {
                 if let Some(state) = states.remove(key) {
                     if let Some(d) = download_schedulers.get_mut(&state.peer) {
-                        d.punish(1);
+                        if should_punish {
+                            d.punish(1);
+                        }
                         d.hashes.remove(key);
                     };
                 } else if let Some(v) = compact_inflight.remove(&key.hash) {
-                    for peer in v {
-                        if let Some(d) = download_schedulers.get_mut(&peer) {
-                            d.punish(1);
+                    if should_punish && adjustment {
+                        for peer in v {
+                            if let Some(d) = download_schedulers.get_mut(&peer) {
+                                d.punish(1);
+                            }
                         }
                     }
                 }
@@ -750,14 +774,6 @@ impl InflightBlocks {
             }
             true
         });
-
-        if prev_count == 0 {
-            metrics!(value, "ckb-net.blocks_in_flight", 0, "type" => "total");
-            metrics!(value, "ckb-net.blocks_in_flight", 0, "type" => "elapsed_ms");
-        } else if prev_count != self.total_inflight_count() {
-            metrics!(value, "ckb-net.blocks_in_flight", self.total_inflight_count() as u64, "type" => "total");
-            metrics!(value, "ckb-net.blocks_in_flight", BLOCK_DOWNLOAD_TIMEOUT, "type" => "elapsed_ms");
-        }
 
         disconnect_list
     }
@@ -816,6 +832,7 @@ impl InflightBlocks {
     }
 
     pub fn remove_by_block(&mut self, block: BlockNumberAndHash) -> bool {
+        let should_punish = self.download_schedulers.len() > self.protect_num;
         let download_schedulers = &mut self.download_schedulers;
         let trace = &mut self.trace_number;
         let compact = &mut self.compact_reconstruct_inflight;
@@ -834,33 +851,48 @@ impl InflightBlocks {
                         match time_analyzer.push_time(elapsed) {
                             TimeQuantile::MinToFast => set.increase(2),
                             TimeQuantile::FastToNormal => set.increase(1),
-                            TimeQuantile::NormalToUpper => set.decrease(1),
-                            TimeQuantile::UpperToMax => set.decrease(2),
+                            TimeQuantile::NormalToUpper => {
+                                if should_punish {
+                                    set.decrease(1)
+                                }
+                            }
+                            TimeQuantile::UpperToMax => {
+                                if should_punish {
+                                    set.decrease(2)
+                                }
+                            }
                         }
                     }
                     if !trace.is_empty() {
                         trace.remove(&block);
                     }
                 };
-                elapsed
-            })
-            .map(|elapsed| {
-                metrics!(value, "ckb-net.blocks_in_flight", self.total_inflight_count() as u64, "type" => "total");
-                metrics!(value, "ckb-net.blocks_in_flight", elapsed, "type" => "elapsed_ms");
             })
             .is_some()
     }
 }
 
 impl Peers {
-    pub fn on_connected(&self, peer: PeerIndex, peer_flags: PeerFlags) {
+    pub fn sync_connected(&self, peer: PeerIndex, peer_flags: PeerFlags) {
         self.state
             .write()
             .entry(peer)
             .and_modify(|state| {
                 state.peer_flags = peer_flags;
+                state.sync_connected = true;
             })
-            .or_insert_with(|| PeerState::new(peer_flags));
+            .or_insert_with(|| {
+                let mut state = PeerState::new(peer_flags);
+                state.sync_connected = true;
+                state
+            });
+    }
+
+    pub fn relay_connected(&self, peer: PeerIndex) {
+        self.state
+            .write()
+            .entry(peer)
+            .or_insert_with(|| PeerState::new(PeerFlags::default()));
     }
 
     pub fn get_best_known_header(&self, pi: PeerIndex) -> Option<HeaderView> {
@@ -1037,19 +1069,15 @@ impl HeaderView {
         F: FnMut(&Byte32, Option<bool>) -> Option<HeaderView>,
         G: Fn(BlockNumber, &HeaderView) -> Option<HeaderView>,
     {
-        let timer = Timer::start();
         let mut current = self;
         if number > current.number() {
             return None;
         }
 
-        let base_number = current.number();
-        let mut steps = 0u64;
         let mut number_walk = current.number();
         while number_walk > number {
             let number_skip = get_skip_height(number_walk);
             let number_skip_prev = get_skip_height(number_walk - 1);
-            steps += 1;
             let store_first = current.number() <= tip_number;
             match current.skip_hash {
                 Some(ref hash)
@@ -1072,11 +1100,6 @@ impl HeaderView {
                 break;
             }
         }
-        metrics!(timing, "ckb-net.get_ancestor", timer.stop(), "type" => "elapsed");
-        metrics!(value, "ckb-net.get_ancestor", steps, "type" => "steps");
-        metrics!(value, "ckb-net.get_ancestor", base_number, "type" => "base_number");
-        metrics!(value, "ckb-net.get_ancestor", number, "type" => "target_number");
-        metrics!(value, "ckb-net.get_ancestor", current.number(), "type" => "ancestor_number");
         Some(current).map(HeaderView::into_inner)
     }
 
@@ -1168,6 +1191,7 @@ type PendingCompactBlockMap = HashMap<
     ),
 >;
 
+/// Sync state shared between sync and relayer protocol
 #[derive(Clone)]
 pub struct SyncShared {
     shared: Shared,
@@ -1175,11 +1199,22 @@ pub struct SyncShared {
 }
 
 impl SyncShared {
-    pub fn new(shared: Shared, sync_config: SyncConfig) -> SyncShared {
-        Self::with_tmpdir::<PathBuf>(shared, sync_config, None)
+    /// only use on test
+    pub fn new(
+        shared: Shared,
+        sync_config: SyncConfig,
+        tx_relay_receiver: Receiver<(Option<PeerIndex>, Byte32)>,
+    ) -> SyncShared {
+        Self::with_tmpdir::<PathBuf>(shared, sync_config, None, tx_relay_receiver)
     }
 
-    pub fn with_tmpdir<P>(shared: Shared, sync_config: SyncConfig, tmpdir: Option<P>) -> SyncShared
+    /// Generate a global sync state through configuration
+    pub fn with_tmpdir<P>(
+        shared: Shared,
+        sync_config: SyncConfig,
+        tmpdir: Option<P>,
+        tx_relay_receiver: Receiver<(Option<PeerIndex>, Byte32)>,
+    ) -> SyncShared
     where
         P: AsRef<Path>,
     {
@@ -1200,13 +1235,11 @@ impl SyncShared {
         let state = SyncState {
             n_sync_started: AtomicUsize::new(0),
             n_protected_outbound_peers: AtomicUsize::new(0),
-            ibd_finished: AtomicBool::new(false),
             shared_best_header,
             header_map,
             block_status_map: Mutex::new(HashMap::new()),
             tx_filter: Mutex::new(Filter::new(TX_FILTER_SIZE)),
             peers: Peers::default(),
-            misbehavior: RwLock::new(HashMap::default()),
             known_txs: Mutex::new(KnownFilter::default()),
             pending_get_block_proposals: Mutex::new(HashMap::default()),
             pending_compact_blocks: Mutex::new(HashMap::default()),
@@ -1215,7 +1248,9 @@ impl SyncShared {
             inflight_transactions: Mutex::new(LruCache::new(TX_ASKED_SIZE)),
             inflight_blocks: RwLock::new(InflightBlocks::default()),
             pending_get_headers: RwLock::new(LruCache::new(GET_HEADERS_CACHE_SIZE)),
-            tx_hashes: Mutex::new(HashMap::default()),
+            tx_relay_receiver,
+            assume_valid_target: Mutex::new(sync_config.assume_valid_target),
+            min_chain_work: sync_config.min_chain_work,
         };
 
         SyncShared {
@@ -1224,10 +1259,12 @@ impl SyncShared {
         }
     }
 
+    /// Shared chain db/config
     pub fn shared(&self) -> &Shared {
         &self.shared
     }
 
+    /// Get snapshot with current chain
     pub fn active_chain(&self) -> ActiveChain {
         ActiveChain {
             shared: self.clone(),
@@ -1236,23 +1273,27 @@ impl SyncShared {
         }
     }
 
+    /// Get chain store
     pub fn store(&self) -> &ChainDB {
         self.shared.store()
     }
 
+    /// Get sync state
     pub fn state(&self) -> &SyncState {
         &self.state
     }
 
+    /// Get consensus config
     pub fn consensus(&self) -> &Consensus {
         self.shared.consensus()
     }
 
+    /// Insert new block to chain store
     pub fn insert_new_block(
         &self,
         chain: &ChainController,
         block: Arc<core::BlockView>,
-    ) -> Result<bool, FailureError> {
+    ) -> Result<bool, CKBError> {
         // Insert the given block into orphan_block_pool if its parent is not found
         if !self.is_parent_stored(&block) {
             debug!(
@@ -1277,6 +1318,7 @@ impl SyncShared {
         ret
     }
 
+    /// Try search orphan pool with current tip header hash
     pub fn try_search_orphan_pool(&self, chain: &ChainController, parent_hash: &Byte32) {
         let descendants = self.state.remove_orphan_by_parent(parent_hash);
         debug!(
@@ -1308,16 +1350,33 @@ impl SyncShared {
         }
     }
 
-    fn accept_block(
+    pub(crate) fn accept_block(
         &self,
         chain: &ChainController,
         block: Arc<core::BlockView>,
-    ) -> Result<bool, FailureError> {
-        let ret = chain.process_block(Arc::clone(&block));
-        if ret.is_err() {
-            error!("accept block {:?} {:?}", block, ret);
-            self.state
-                .insert_block_status(block.header().hash(), BlockStatus::BLOCK_INVALID);
+    ) -> Result<bool, CKBError> {
+        let ret = {
+            let mut assume_valid_target = self.state.assume_valid_target();
+            if let Some(ref target) = *assume_valid_target {
+                // if the target has been reached, delete it
+                let switch = if target == &Unpack::<H256>::unpack(&core::BlockView::hash(&block)) {
+                    assume_valid_target.take();
+                    Switch::NONE
+                } else {
+                    Switch::DISABLE_SCRIPT
+                };
+
+                chain.internal_process_block(Arc::clone(&block), switch)
+            } else {
+                chain.process_block(Arc::clone(&block))
+            }
+        };
+        if let Err(ref error) = ret {
+            error!("accept block {:?} {}", block, error);
+            if !is_internal_db_error(&error) {
+                self.state
+                    .insert_block_status(block.header().hash(), BlockStatus::BLOCK_INVALID);
+            }
         } else {
             // Clear the newly inserted block from block_status_map.
             //
@@ -1329,9 +1388,10 @@ impl SyncShared {
             self.state.remove_header_view(&block.as_ref().hash());
         }
 
-        Ok(ret?)
+        ret
     }
 
+    /// Sync a new valid header, try insert to sync state
     // Update the header_map
     // Update the block_status_map
     // Update the shared_best_header if need
@@ -1366,13 +1426,12 @@ impl SyncShared {
         );
         self.state.header_map.insert(header_view.clone());
         self.state
-            .insert_block_status(header.hash(), BlockStatus::HEADER_VALID);
-        self.state
             .peers()
             .may_set_best_known_header(peer, header_view.clone());
         self.state.may_set_shared_best_header(header_view);
     }
 
+    /// Get header view with hash
     pub fn get_header_view(
         &self,
         hash: &Byte32,
@@ -1399,37 +1458,32 @@ impl SyncShared {
         }
     }
 
-    pub fn get_header(&self, hash: &Byte32) -> Option<core::HeaderView> {
-        self.state
-            .header_map
-            .get(hash)
-            .map(HeaderView::into_inner)
-            .or_else(|| self.store().get_block_header(hash))
-    }
-
+    /// Check whether block's parent has been inserted to chain store
     pub fn is_parent_stored(&self, block: &core::BlockView) -> bool {
         self.store()
             .get_block_header(&block.data().header().raw().parent_hash())
             .is_some()
     }
 
+    /// Get epoch ext by block hash
     pub fn get_epoch_ext(&self, hash: &Byte32) -> Option<EpochExt> {
         self.store().get_block_epoch(&hash)
     }
+}
 
-    pub(crate) fn new_header_resolver<'a>(
-        &'a self,
-        header: &'a core::HeaderView,
-        parent: core::HeaderView,
-    ) -> HeaderResolverWrapper<'a> {
-        HeaderResolverWrapper::build(header, Some(parent))
+impl HeaderProvider for SyncShared {
+    fn get_header(&self, hash: &Byte32) -> Option<core::HeaderView> {
+        self.state
+            .header_map
+            .get(hash)
+            .map(HeaderView::into_inner)
+            .or_else(|| self.store().get_block_header(hash))
     }
 }
 
 pub struct SyncState {
     n_sync_started: AtomicUsize,
     n_protected_outbound_peers: AtomicUsize,
-    ibd_finished: AtomicBool,
 
     /* Status irrelevant to peers */
     shared_best_header: RwLock<HeaderView>,
@@ -1439,7 +1493,6 @@ pub struct SyncState {
 
     /* Status relevant to peers */
     peers: Peers,
-    misbehavior: RwLock<HashMap<PeerIndex, u32>>,
     known_txs: Mutex<KnownFilter>,
 
     /* Cached items which we had received but not completely process */
@@ -1454,10 +1507,26 @@ pub struct SyncState {
     inflight_blocks: RwLock<InflightBlocks>,
 
     /* cached for sending bulk */
-    tx_hashes: Mutex<HashMap<PeerIndex, LinkedHashSet<Byte32>>>,
+    tx_relay_receiver: Receiver<(Option<PeerIndex>, Byte32)>,
+    assume_valid_target: Mutex<Option<H256>>,
+    min_chain_work: U256,
 }
 
 impl SyncState {
+    pub fn assume_valid_target(&self) -> MutexGuard<Option<H256>> {
+        self.assume_valid_target.lock()
+    }
+
+    pub fn min_chain_work(&self) -> &U256 {
+        &self.min_chain_work
+    }
+
+    pub fn min_chain_work_ready(&self) -> bool {
+        self.shared_best_header
+            .read()
+            .is_better_than(&self.min_chain_work)
+    }
+
     pub fn n_sync_started(&self) -> &AtomicUsize {
         &self.n_sync_started
     }
@@ -1468,16 +1537,6 @@ impl SyncState {
 
     pub fn peers(&self) -> &Peers {
         &self.peers
-    }
-
-    pub fn misbehavior(&self, pi: PeerIndex, score: u32) {
-        if score != 0 {
-            self.misbehavior
-                .write()
-                .entry(pi)
-                .and_modify(|s| *s += score)
-                .or_insert_with(|| score);
-        }
     }
 
     pub fn known_txs(&self) -> MutexGuard<KnownFilter> {
@@ -1504,17 +1563,20 @@ impl SyncState {
         self.inflight_proposals.lock()
     }
 
-    pub fn tx_hashes(&self) -> MutexGuard<HashMap<PeerIndex, LinkedHashSet<Byte32>>> {
-        self.tx_hashes.lock()
-    }
-
-    pub fn take_tx_hashes(&self) -> HashMap<PeerIndex, LinkedHashSet<Byte32>> {
-        let mut map = self.tx_hashes.lock();
-        mem::take(&mut *map)
+    pub fn take_relay_tx_hashes(&self, limit: usize) -> Vec<(Option<PeerIndex>, Byte32)> {
+        self.tx_relay_receiver.try_iter().take(limit).collect()
     }
 
     pub fn shared_best_header(&self) -> HeaderView {
         self.shared_best_header.read().to_owned()
+    }
+
+    pub fn shared_best_header_ref(&self) -> RwLockReadGuard<HeaderView> {
+        self.shared_best_header.read()
+    }
+
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.header_map
     }
 
     pub fn may_set_shared_best_header(&self, header: HeaderView) {
@@ -1526,7 +1588,7 @@ impl SyncState {
             self.header_map.contains_key(&header.hash()),
             "HeaderView must exists in header_map before set best header"
         );
-        metrics!(gauge, "ckb-chain.tip_number", header.number() as i64, "type" => "best_header");
+        metrics!(gauge, "ckb.shared_best_number", header.number() as i64);
         *self.shared_best_header.write() = header;
     }
 
@@ -1544,14 +1606,17 @@ impl SyncState {
     }
 
     pub fn mark_as_known_tx(&self, hash: Byte32) {
-        self.mark_as_known_txs(vec![hash]);
+        self.mark_as_known_txs(iter::once(hash));
     }
 
-    pub fn mark_as_known_txs(&self, hashes: Vec<Byte32>) {
+    // maybe someday we can use
+    // where T: Iterator<Item=Byte32>,
+    // for<'a> &'a T: Iterator<Item=&'a Byte32>,
+    pub fn mark_as_known_txs(&self, hashes: impl Iterator<Item = Byte32> + std::clone::Clone) {
         {
             let mut inflight_transactions = self.inflight_transactions.lock();
-            for hash in hashes.iter() {
-                inflight_transactions.remove(&hash);
+            for hash in hashes.clone() {
+                inflight_transactions.pop(&hash);
             }
         }
 
@@ -1604,7 +1669,7 @@ impl SyncState {
         blocks.iter().for_each(|block| {
             block_status_map.remove(&block.hash());
         });
-        shrink_to_fit!(block_status_map, SHRINK_THREHOLD);
+        shrink_to_fit!(block_status_map, SHRINK_THRESHOLD);
         blocks
     }
 
@@ -1619,7 +1684,7 @@ impl SyncState {
     pub fn remove_block_status(&self, block_hash: &Byte32) {
         let mut guard = self.block_status_map.lock();
         guard.remove(block_hash);
-        shrink_to_fit!(guard, SHRINK_THREHOLD);
+        shrink_to_fit!(guard, SHRINK_THRESHOLD);
     }
 
     pub fn clear_get_block_proposals(
@@ -1737,16 +1802,7 @@ impl ActiveChain {
     }
 
     pub fn is_initial_block_download(&self) -> bool {
-        // Once this function has returned false, it must remain false.
-        if self.state.ibd_finished.load(Ordering::Relaxed) {
-            false
-        } else if unix_time_as_millis().saturating_sub(self.tip_header().timestamp()) > MAX_TIP_AGE
-        {
-            true
-        } else {
-            self.state.ibd_finished.store(true, Ordering::Relaxed);
-            false
-        }
+        self.shared.shared().is_initial_block_download()
     }
 
     pub fn get_ancestor(&self, base: &Byte32, number: BlockNumber) -> Option<core::HeaderView> {
@@ -1914,7 +1970,7 @@ impl ActiveChain {
             .state
             .pending_get_headers
             .write()
-            .get_refresh(&(peer, header.hash()))
+            .get(&(peer, header.hash()))
         {
             if Instant::now() < *last_time + GET_HEADERS_TIMEOUT {
                 debug!(
@@ -1932,7 +1988,7 @@ impl ActiveChain {
         self.state
             .pending_get_headers
             .write()
-            .insert((peer, header.hash()), Instant::now());
+            .put((peer, header.hash()), Instant::now());
 
         debug!(
             "send_getheaders_to_peer peer={}, hash={}",
@@ -1945,28 +2001,26 @@ impl ActiveChain {
             .hash_stop(packed::Byte32::zero())
             .build();
         let message = packed::SyncMessage::new_builder().set(content).build();
-        if let Err(err) = nc.send_message(
-            SupportProtocols::Sync.protocol_id(),
-            peer,
-            message.as_bytes(),
-        ) {
-            debug!("synchronizer send get_headers error: {:?}", err);
-        }
+        let _status = send_message(SupportProtocols::Sync.protocol_id(), nc, peer, &message);
     }
 
     pub fn get_block_status(&self, block_hash: &Byte32) -> BlockStatus {
         match self.state.block_status_map.lock().get(block_hash).cloned() {
             Some(status) => status,
             None => {
-                let verified = self
-                    .snapshot
-                    .get_block_ext(block_hash)
-                    .map(|block_ext| block_ext.verified);
-                match verified {
-                    None => BlockStatus::UNKNOWN,
-                    Some(None) => BlockStatus::BLOCK_STORED,
-                    Some(Some(true)) => BlockStatus::BLOCK_VALID,
-                    Some(Some(false)) => BlockStatus::BLOCK_INVALID,
+                if self.state.header_map.contains_key(block_hash) {
+                    BlockStatus::HEADER_VALID
+                } else {
+                    let verified = self
+                        .snapshot
+                        .get_block_ext(block_hash)
+                        .map(|block_ext| block_ext.verified);
+                    match verified {
+                        None => BlockStatus::UNKNOWN,
+                        Some(None) => BlockStatus::BLOCK_STORED,
+                        Some(Some(true)) => BlockStatus::BLOCK_VALID,
+                        Some(Some(false)) => BlockStatus::BLOCK_INVALID,
+                    }
                 }
             }
         }
@@ -1993,9 +2047,9 @@ impl From<bool> for IBDState {
     }
 }
 
-impl Into<bool> for IBDState {
-    fn into(self) -> bool {
-        match self {
+impl From<IBDState> for bool {
+    fn from(s: IBDState) -> bool {
+        match s {
             IBDState::In => true,
             IBDState::Out => false,
         }

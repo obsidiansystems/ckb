@@ -1,64 +1,96 @@
-use super::utils::wait_get_blocks;
+use crate::util::mining::mine;
 use crate::utils::{build_headers, wait_until};
-use crate::{Net, Spec, TestProtocol};
+use crate::{Net, Node, Spec};
+use ckb_constant::sync::{BLOCK_DOWNLOAD_TIMEOUT, INIT_BLOCKS_IN_TRANSIT_PER_PEER};
+use ckb_logger::info;
 use ckb_network::SupportProtocols;
-use ckb_sync::BLOCK_DOWNLOAD_TIMEOUT;
-use ckb_types::core::HeaderView;
-use log::info;
-use std::time::Instant;
+use ckb_types::{core::HeaderView, packed, prelude::*};
+use std::time::{Duration, Instant};
 
 pub struct GetBlocksTimeout;
 
 impl Spec for GetBlocksTimeout {
-    crate::name!("get_blocks_timeout");
+    crate::setup!(num_nodes: 2);
 
-    crate::setup!(
-        connect_all: false,
-        num_nodes: 2,
-        protocols: vec![TestProtocol::sync()],
-    );
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node1 = nodes.pop().unwrap();
+        let node2 = nodes.pop().unwrap();
 
-    fn run(&self, net: &mut Net) {
-        let node1 = net.nodes.pop().unwrap();
-        let node2 = net.nodes.pop().unwrap();
-        node1.generate_blocks(1);
-        node2.generate_blocks(20);
+        mine(&node1, 1);
+        mine(&node2, INIT_BLOCKS_IN_TRANSIT_PER_PEER as u64 + 20);
 
         let headers: Vec<HeaderView> = (1..=node2.get_tip_block_number())
             .map(|i| node2.get_header_by_number(i))
             .collect();
+        let expected_hash = headers[INIT_BLOCKS_IN_TRANSIT_PER_PEER - 1].hash();
 
+        let mut net = Net::new(self.name(), node1.consensus(), vec![SupportProtocols::Sync]);
         net.connect(&node1);
-        let (pi, _, _) = net.receive();
         info!("Send Headers to node1");
-        net.send(
-            SupportProtocols::Sync.protocol_id(),
-            pi,
-            build_headers(&headers),
-        );
+        net.send(&node1, SupportProtocols::Sync, build_headers(&headers));
         info!("Receive GetBlocks from node1");
 
         let block_download_timeout_secs = BLOCK_DOWNLOAD_TIMEOUT / 1000;
-        let (first, received) = wait_get_blocks_point(block_download_timeout_secs * 2, &net);
-        assert!(received, "Should received GetBlocks");
-        let (second, received) = wait_get_blocks_point(block_download_timeout_secs * 2, &net);
-        assert!(!received, "Should not received GetBlocks");
-        let elapsed = second.duration_since(first).as_secs();
-        let error_margin = 2;
-        assert!(elapsed >= block_download_timeout_secs - error_margin);
+        let received = wait_get_blocks_point(
+            &net,
+            &node1,
+            block_download_timeout_secs * 2,
+            INIT_BLOCKS_IN_TRANSIT_PER_PEER,
+        );
+        assert!(received.is_some(), "Should received GetBlocks");
+        let (count, last_hash) = received.unwrap();
+        assert!(
+            count == INIT_BLOCKS_IN_TRANSIT_PER_PEER,
+            "Should received only {} GetBlocks",
+            INIT_BLOCKS_IN_TRANSIT_PER_PEER
+        );
+        assert!(
+            expected_hash == last_hash,
+            "The last hash of GetBlocks should be {:#x} but got {:#x}",
+            expected_hash,
+            last_hash,
+        );
+
+        let received = wait_get_blocks_point(&net, &node1, block_download_timeout_secs * 2, 1);
+        assert!(
+            received.is_some(),
+            "in the case of sparse connections, even if download times out, net should continue to receive GetBlock requests"
+        );
 
         let rpc_client = node1.rpc_client();
         let result = wait_until(10, || {
             let peers = rpc_client.get_peers();
-            peers.is_empty()
+            !peers.is_empty()
         });
         if !result {
-            panic!("node1 must disconnect net");
+            panic!("node1 must not disconnect net");
         }
     }
 }
 
-fn wait_get_blocks_point(secs: u64, net: &Net) -> (Instant, bool) {
-    let flag = wait_get_blocks(secs, net);
-    (Instant::now(), flag)
+fn wait_get_blocks_point(
+    net: &Net,
+    node: &Node,
+    secs: u64,
+    expected_count: usize,
+) -> Option<(usize, packed::Byte32)> {
+    let mut count = 0;
+    let instant = Instant::now();
+    let mut last_hash = None;
+    while instant.elapsed() < Duration::from_secs(secs) {
+        if let Ok((_, _, data)) = net.receive_timeout(node, Duration::from_secs(1)) {
+            if let Ok(message) = packed::SyncMessage::from_slice(&data) {
+                if let packed::SyncMessageUnion::GetBlocks(inner) = message.to_enum() {
+                    count += inner.block_hashes().len();
+                    if let Some(hash) = inner.block_hashes().into_iter().last() {
+                        last_hash = Some(hash);
+                    }
+                    if count >= expected_count {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    last_hash.map(|hash| (count, hash))
 }

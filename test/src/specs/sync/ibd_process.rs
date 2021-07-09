@@ -1,31 +1,30 @@
+use crate::util::mining::mine;
 use crate::utils::{sleep, wait_until};
-use crate::{Net, Spec};
-use log::info;
+use crate::{Node, Spec};
+use ckb_logger::info;
 
 pub struct IBDProcess;
 
 impl Spec for IBDProcess {
-    crate::name!("ibd_process");
+    crate::setup!(num_nodes: 7);
 
-    crate::setup!(num_nodes: 7, connect_all: false);
-
-    fn run(&self, net: &mut Net) {
+    fn run(&self, nodes: &mut Vec<Node>) {
         info!("Running IBD process");
 
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
-        let node3 = &net.nodes[3];
-        let node4 = &net.nodes[4];
-        let node5 = &net.nodes[5];
-        let node6 = &net.nodes[6];
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
+        let node3 = &nodes[3];
+        let node4 = &nodes[4];
+        let node5 = &nodes[5];
+        let node6 = &nodes[6];
 
         node0.connect(node1);
         node0.connect(node2);
         node0.connect(node3);
         node0.connect(node4);
         // The node's outbound connection does not retain the peer which in the ibd state
-        node0.generate_blocks(1);
+        mine(node0, 1);
         // will never connect
         node0.connect_uncheck(node5);
         node0.connect_uncheck(node6);
@@ -84,39 +83,29 @@ impl Spec for IBDProcess {
 pub struct IBDProcessWithWhiteList;
 
 impl Spec for IBDProcessWithWhiteList {
-    crate::name!("ibd_process_with_whitelist");
+    crate::setup!(num_nodes: 7);
 
-    crate::setup!(num_nodes: 7, connect_all: false);
-
-    fn run(&self, net: &mut Net) {
+    fn run(&self, nodes: &mut Vec<Node>) {
         info!("Running IBD process with whitelist");
 
         {
-            let node6_listen = format!(
-                "/ip4/127.0.0.1/tcp/{}/p2p/{}",
-                net.nodes[6].p2p_port(),
-                net.nodes[6].node_id()
-            );
-
-            net.nodes[0].stop();
+            nodes[0].stop();
 
             // whitelist will be connected on outbound on node start
-            net.nodes[0].edit_config_file(
-                Box::new(|_| ()),
-                Box::new(move |config| {
-                    config.network.whitelist_peers = vec![node6_listen.parse().unwrap()]
-                }),
-            );
-            net.nodes[0].start();
+            let node6_address = nodes[6].p2p_address();
+            nodes[0].modify_app_config(move |config| {
+                config.network.whitelist_peers = vec![node6_address.parse().unwrap()];
+            });
+            nodes[0].start();
         }
 
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
-        let node3 = &net.nodes[3];
-        let node4 = &net.nodes[4];
-        let node5 = &net.nodes[5];
-        let node6 = &net.nodes[6];
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
+        let node3 = &nodes[3];
+        let node4 = &nodes[4];
+        let node5 = &nodes[5];
+        let node6 = &nodes[6];
 
         node0.connect(node1);
         node0.connect(node2);
@@ -140,9 +129,9 @@ impl Spec for IBDProcessWithWhiteList {
         // After the whitelist is disconnected, it will always try to reconnect.
         // In order to ensure that the node6 has already generated two blocks when reconnecting,
         // it must be in the connected state, and then disconnected.
-        node6.generate_blocks(2);
+        mine(node6, 2);
 
-        let generate_res = wait_until(10, || net.nodes[6].get_tip_block_number() == 2);
+        let generate_res = wait_until(10, || nodes[6].get_tip_block_number() == 2);
 
         if !generate_res {
             panic!("node6 can't generate blocks to 2");

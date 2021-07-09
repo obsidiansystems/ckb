@@ -1,9 +1,8 @@
-use crate::cell::{attach_block_cell, detach_block_cell};
 use crate::tests::util::{calculate_reward, create_always_success_tx, start_chain, MockStore};
 use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder};
 use ckb_dao_utils::genesis_dao_data;
 use ckb_shared::shared::Shared;
-use ckb_store::ChainStore;
+use ckb_store::{attach_block_cell, detach_block_cell, ChainStore};
 use ckb_test_chain_utils::always_success_cell;
 use ckb_types::prelude::*;
 use ckb_types::{
@@ -57,15 +56,11 @@ pub(crate) fn gen_block(
     let mut txs = vec![cellbase];
     txs.extend_from_slice(&transactions);
 
-    let last_epoch = store
-        .0
-        .get_block_epoch_index(&parent_header.hash())
-        .and_then(|index| store.0.get_epoch_ext(&index))
-        .unwrap();
-    let epoch = store
-        .0
-        .next_epoch_ext(shared.consensus(), &last_epoch, &parent_header)
-        .unwrap_or(last_epoch);
+    let epoch = shared
+        .consensus()
+        .next_epoch_ext(&parent_header, &shared.store().as_data_provider())
+        .unwrap()
+        .epoch();
 
     let block = BlockBuilder::default()
         .parent_hash(parent_header.hash())

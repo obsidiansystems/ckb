@@ -9,8 +9,8 @@
 ///
 /// Other protocols will be closed after a timeout.
 use crate::{network::disconnect_with_message, NetworkState, Peer, ProtocolId, SupportProtocols};
-use ckb_logger::{debug, warn};
-use futures::{Future, Stream};
+use ckb_logger::debug;
+use futures::Future;
 use p2p::service::ServiceControl;
 use std::{
     pin::Pin,
@@ -86,10 +86,10 @@ impl ProtocolTypeCheckerService {
                 }
 
                 // check open protocol type
-                if let Err(err) = self.opened_procotol_type(peer) {
+                if let Err(err) = self.opened_protocol_type(peer) {
                     debug!(
                         "close peer {:?} due to open protocols error: {}",
-                        peer.peer_id, err
+                        peer.connected_addr, err
                     );
                     if let Err(err) = disconnect_with_message(
                         &self.p2p_control,
@@ -103,7 +103,7 @@ impl ProtocolTypeCheckerService {
         });
     }
 
-    fn opened_procotol_type(&self, peer: &Peer) -> Result<ProtocolType, ProtocolTypeError> {
+    fn opened_protocol_type(&self, peer: &Peer) -> Result<ProtocolType, ProtocolTypeError> {
         if peer
             .protocols
             .contains_key(&SupportProtocols::Feeler.protocol_id())
@@ -130,12 +130,8 @@ impl Future for ProtocolTypeCheckerService {
         }
         let mut interval = self.interval.take().unwrap();
         loop {
-            match Pin::new(&mut interval).as_mut().poll_next(cx) {
-                Poll::Ready(Some(_tick)) => self.check_protocol_type(),
-                Poll::Ready(None) => {
-                    warn!("ckb protocol checker service stopped");
-                    return Poll::Ready(());
-                }
+            match interval.poll_tick(cx) {
+                Poll::Ready(_) => self.check_protocol_type(),
                 Poll::Pending => {
                     self.interval = Some(interval);
                     return Poll::Pending;

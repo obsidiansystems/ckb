@@ -1,55 +1,115 @@
+//! CKB command line arguments parser.
 use ckb_build_info::Version;
 use ckb_resource::{DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, DEFAULT_SPEC};
 use clap::{App, AppSettings, Arg, ArgGroup, ArgMatches, SubCommand};
 
+/// Subcommand `run`.
 pub const CMD_RUN: &str = "run";
+/// Subcommand `miner`.
 pub const CMD_MINER: &str = "miner";
+/// Subcommand `export`.
 pub const CMD_EXPORT: &str = "export";
+/// Subcommand `import`.
 pub const CMD_IMPORT: &str = "import";
+/// Subcommand `init`.
 pub const CMD_INIT: &str = "init";
+/// Subcommand `replay`.
 pub const CMD_REPLAY: &str = "replay";
+/// Subcommand `stats`.
 pub const CMD_STATS: &str = "stats";
+/// Subcommand `list-hashes`.
 pub const CMD_LIST_HASHES: &str = "list-hashes";
+/// Subcommand `reset-data`.
 pub const CMD_RESET_DATA: &str = "reset-data";
+/// Subcommand `peer-id`.
 pub const CMD_PEERID: &str = "peer-id";
+/// Subcommand `gen`.
 pub const CMD_GEN_SECRET: &str = "gen";
+/// Subcommand `from-secret`.
 pub const CMD_FROM_SECRET: &str = "from-secret";
+/// Subcommand `migrate`.
+pub const CMD_MIGRATE: &str = "migrate";
+/// Subcommand `db-repair`.
+pub const CMD_DB_REPAIR: &str = "db-repair";
 
+/// Command line argument `--config-dir`.
 pub const ARG_CONFIG_DIR: &str = "config-dir";
+/// Command line argument `--format`.
 pub const ARG_FORMAT: &str = "format";
+/// Command line argument `--target`.
 pub const ARG_TARGET: &str = "target";
+/// Command line argument `--source`.
 pub const ARG_SOURCE: &str = "source";
+/// Command line argument `--data`.
 pub const ARG_DATA: &str = "data";
+/// Command line argument `--list-chains`.
 pub const ARG_LIST_CHAINS: &str = "list-chains";
+/// Command line argument `--interactive`.
 pub const ARG_INTERACTIVE: &str = "interactive";
+/// Command line argument `--chain`.
 pub const ARG_CHAIN: &str = "chain";
+/// Command line argument `--import-spec`.
 pub const ARG_IMPORT_SPEC: &str = "import-spec";
+/// The argument for the genesis message.
+pub const ARG_GENESIS_MESSAGE: &str = "genesis-message";
+/// Command line argument `--p2p-port`.
 pub const ARG_P2P_PORT: &str = "p2p-port";
+/// Command line argument `--rpc-port`.
 pub const ARG_RPC_PORT: &str = "rpc-port";
+/// Command line argument `--force`.
 pub const ARG_FORCE: &str = "force";
+/// Command line argument `--log-to`.
 pub const ARG_LOG_TO: &str = "log-to";
+/// Command line argument `--bundled`.
 pub const ARG_BUNDLED: &str = "bundled";
+/// Command line argument `--ba-code-hash`.
 pub const ARG_BA_CODE_HASH: &str = "ba-code-hash";
+/// Command line argument `--ba-arg`.
 pub const ARG_BA_ARG: &str = "ba-arg";
+/// Command line argument `--ba-hash-type`.
 pub const ARG_BA_HASH_TYPE: &str = "ba-hash-type";
+/// Command line argument `--ba-message`.
 pub const ARG_BA_MESSAGE: &str = "ba-message";
+/// Command line argument `--ba-advanced`.
 pub const ARG_BA_ADVANCED: &str = "ba-advanced";
+/// Command line argument `--from`.
 pub const ARG_FROM: &str = "from";
+/// Command line argument `--to`.
 pub const ARG_TO: &str = "to";
+/// Command line argument `--all`.
 pub const ARG_ALL: &str = "all";
+/// Command line argument `--limit`.
 pub const ARG_LIMIT: &str = "limit";
+/// Command line argument `--database`.
 pub const ARG_DATABASE: &str = "database";
-pub const ARG_INDEXER: &str = "indexer";
+/// Command line argument `--network`.
 pub const ARG_NETWORK: &str = "network";
+/// Command line argument `--network-peer-store`.
 pub const ARG_NETWORK_PEER_STORE: &str = "network-peer-store";
+/// Command line argument `--network-secret-key`.
 pub const ARG_NETWORK_SECRET_KEY: &str = "network-secret-key";
+/// Command line argument `--logs`.
 pub const ARG_LOGS: &str = "logs";
+/// Command line argument `--tmp-target`.
 pub const ARG_TMP_TARGET: &str = "tmp-target";
+/// Command line argument `--secret-path`.
 pub const ARG_SECRET_PATH: &str = "secret-path";
+/// Command line argument `--profile`.
 pub const ARG_PROFILE: &str = "profile";
+/// Command line argument `--sanity-check`.
 pub const ARG_SANITY_CHECK: &str = "sanity-check";
-pub const ARG_FULL_VERFICATION: &str = "full-verfication";
+/// Command line argument `--full-verification`.
+pub const ARG_FULL_VERIFICATION: &str = "full-verification";
+/// Command line argument `--skip-spec-check`.
+pub const ARG_SKIP_CHAIN_SPEC_CHECK: &str = "skip-spec-check";
+/// Present `overwrite-spec` arg to force overriding the chain spec in the database with the present configured chain spec
+pub const ARG_OVERWRITE_CHAIN_SPEC: &str = "overwrite-spec";
+/// Command line argument `--assume-valid-target`.
+pub const ARG_ASSUME_VALID_TARGET: &str = "assume-valid-target";
+/// Command line argument `--check`.
+pub const ARG_MIGRATE_CHECK: &str = "check";
 
+/// Command line arguments group `ba` for block assembler.
 const GROUP_BA: &str = "ba";
 
 fn basic_app<'b>() -> App<'static, 'b> {
@@ -77,8 +137,13 @@ fn basic_app<'b>() -> App<'static, 'b> {
         .subcommand(stats())
         .subcommand(reset_data())
         .subcommand(peer_id())
+        .subcommand(migrate())
+        .subcommand(db_repair())
 }
 
+/// Parse the command line arguments by supplying the version information.
+///
+/// The version is used to generate the help message and output for `--version`.
 pub fn get_matches(version: &Version) -> ArgMatches<'static> {
     basic_app()
         .version(version.short().as_str())
@@ -87,10 +152,36 @@ pub fn get_matches(version: &Version) -> ArgMatches<'static> {
 }
 
 fn run() -> App<'static, 'static> {
-    SubCommand::with_name(CMD_RUN).about("Runs ckb node").arg(
-        Arg::with_name(ARG_BA_ADVANCED)
-            .long(ARG_BA_ADVANCED)
-            .help("Allows any block assembler code hash and args"),
+    SubCommand::with_name(CMD_RUN)
+        .about("Runs ckb node")
+        .arg(
+            Arg::with_name(ARG_BA_ADVANCED)
+                .long(ARG_BA_ADVANCED)
+                .help("Allows any block assembler code hash and args"),
+        )
+        .arg(
+            Arg::with_name(ARG_SKIP_CHAIN_SPEC_CHECK)
+                .long(ARG_SKIP_CHAIN_SPEC_CHECK)
+                .help("Skips checking the chain spec with the hash stored in the database"),
+        ).arg(
+            Arg::with_name(ARG_OVERWRITE_CHAIN_SPEC)
+                .long(ARG_OVERWRITE_CHAIN_SPEC)
+                .help("Overwrites the chain spec in the database with the present configured chain spec")
+        ).arg(
+        Arg::with_name(ARG_ASSUME_VALID_TARGET)
+            .long(ARG_ASSUME_VALID_TARGET)
+            .takes_value(true)
+            .validator(is_hex)
+            .help("This parameter specifies the hash of a block. \
+            When the height does not reach this block's height, the execution of the script will be disabled, \
+            that is, skip verifying the script content. \
+            \
+            It should be noted that when this option is enabled, the header is first synchronized to \
+            the highest currently found. During this period, if the assume valid target is found, \
+            the download of the block starts; \
+            If the timestamp of the best known header is already within 24 hours of the current time
+            and the assume valid target is not found, the target will automatically become invalid,
+            and the download of the block will be started with verify")
     )
 }
 
@@ -112,9 +203,9 @@ fn miner() -> App<'static, 'static> {
 fn reset_data() -> App<'static, 'static> {
     SubCommand::with_name(CMD_RESET_DATA)
         .about(
-            "Truncate the data directory\n\
+            "Truncate the database directory\n\
              Example:\n\
-             ckb reset-data --force --indexer",
+             ckb reset-data --force --database",
         )
         .arg(
             Arg::with_name(ARG_FORCE)
@@ -130,12 +221,7 @@ fn reset_data() -> App<'static, 'static> {
         .arg(
             Arg::with_name(ARG_DATABASE)
                 .long(ARG_DATABASE)
-                .help("Delete both `data/db` and `data/indexer_db`"),
-        )
-        .arg(
-            Arg::with_name(ARG_INDEXER)
-                .long(ARG_INDEXER)
-                .help("Delete only `data/indexer_db`"),
+                .help("Delete only `data/db`"),
         )
         .arg(
             Arg::with_name(ARG_NETWORK)
@@ -205,7 +291,7 @@ fn replay() -> App<'static, 'static> {
             Arg::with_name(ARG_SANITY_CHECK).long(ARG_SANITY_CHECK).help("Enable sanity check")
         )
         .arg(
-            Arg::with_name(ARG_FULL_VERFICATION).long(ARG_FULL_VERFICATION).help("Enable sanity check")
+            Arg::with_name(ARG_FULL_VERIFICATION).long(ARG_FULL_VERIFICATION).help("Enable sanity check")
         )
         .group(
             ArgGroup::with_name("mode")
@@ -240,6 +326,30 @@ fn import() -> App<'static, 'static> {
                 .index(1)
                 .help("Specifies the exported data path."),
         )
+}
+
+fn migrate() -> App<'static, 'static> {
+    SubCommand::with_name(CMD_MIGRATE)
+        .about("Runs ckb migration")
+        .arg(
+            Arg::with_name(ARG_MIGRATE_CHECK)
+                .long(ARG_MIGRATE_CHECK)
+                .help(
+                    "Perform database version check without migrating, \
+                    if migration is in need ExitCode(0) is returned，\
+                    otherwise ExitCode(64) is returned",
+                ),
+        )
+        .arg(
+            Arg::with_name(ARG_FORCE)
+                .long(ARG_FORCE)
+                .conflicts_with(ARG_MIGRATE_CHECK)
+                .help("Do migration without interactive prompt"),
+        )
+}
+
+fn db_repair() -> App<'static, 'static> {
+    SubCommand::with_name(CMD_DB_REPAIR).about("Try repair ckb database")
 }
 
 fn list_hashes() -> App<'static, 'static> {
@@ -365,6 +475,17 @@ fn init() -> App<'static, 'static> {
                 .long("spec")
                 .takes_value(true)
                 .hidden(true),
+        )
+        .arg(
+            Arg::with_name(ARG_GENESIS_MESSAGE)
+                .long(ARG_GENESIS_MESSAGE)
+                .value_name(ARG_GENESIS_MESSAGE)
+                .takes_value(true)
+                .help(
+                    "Specify a string as the genesis message. \
+                     Only works for dev chains. \
+                     If no message is provided, use current timestamp.",
+                ),
         )
 }
 

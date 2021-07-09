@@ -3,11 +3,11 @@ mod id_generator;
 mod macros;
 mod error;
 
+use ckb_error::AnyError;
 use ckb_jsonrpc_types::{
-    Alert, BannedAddr, Block, BlockEconomicState, BlockNumber, BlockReward, BlockTemplate,
-    BlockView, Capacity, CellOutputWithOutPoint, CellTransaction, CellWithStatus, ChainInfo, Cycle,
-    DryRunResult, EpochNumber, EpochView, EstimateResult, HeaderView, JsonBytes, LiveCell,
-    LocalNode, LockHashIndexState, OutPoint, PeerState, RemoteNode, Script, Timestamp, Transaction,
+    Alert, BannedAddr, Block, BlockEconomicState, BlockNumber, BlockTemplate, BlockView, Capacity,
+    CellWithStatus, ChainInfo, Cycle, DryRunResult, EpochNumber, EpochView, HeaderView, JsonBytes,
+    LocalNode, OutPoint, RemoteNode, Script, Timestamp, Transaction, TransactionProof,
     TransactionWithStatus, TxPoolInfo, Uint64, Version,
 };
 use ckb_types::core::{
@@ -15,12 +15,10 @@ use ckb_types::core::{
     Version as CoreVersion,
 };
 use ckb_types::{packed::Byte32, prelude::*, H256};
-use failure::Error;
 use lazy_static::lazy_static;
 
 lazy_static! {
-    pub static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::builder()
-        .gzip(true)
+    pub static ref HTTP_CLIENT: reqwest::blocking::Client = reqwest::blocking::Client::builder()
         .timeout(::std::time::Duration::from_secs(30))
         .build()
         .expect("reqwest Client build");
@@ -88,17 +86,6 @@ impl RpcClient {
         self.inner
             .get_tip_header()
             .expect("rpc call get_block_hash")
-    }
-
-    pub fn get_cells_by_lock_hash(
-        &self,
-        lock_hash: Byte32,
-        from: CoreBlockNumber,
-        to: CoreBlockNumber,
-    ) -> Vec<CellOutputWithOutPoint> {
-        self.inner
-            .get_cells_by_lock_hash(lock_hash.unpack(), from.into(), to.into())
-            .expect("rpc call get_cells_by_lock_hash")
     }
 
     pub fn get_live_cell(&self, out_point: OutPoint, with_data: bool) -> CellWithStatus {
@@ -169,7 +156,7 @@ impl RpcClient {
             .expect("rpc call get_block_template")
     }
 
-    pub fn submit_block(&self, work_id: String, block: Block) -> Result<Byte32, Error> {
+    pub fn submit_block(&self, work_id: String, block: Block) -> Result<Byte32, AnyError> {
         self.inner.submit_block(work_id, block).map(|x| x.pack())
     }
 
@@ -179,13 +166,19 @@ impl RpcClient {
             .expect("rpc call get_blockchain_info")
     }
 
+    pub fn get_block_median_time(&self, block_hash: Byte32) -> Option<Timestamp> {
+        self.inner
+            .get_block_median_time(block_hash.unpack())
+            .expect("rpc call get_block_median_time")
+    }
+
     pub fn send_transaction(&self, tx: Transaction) -> Byte32 {
         self.send_transaction_result(tx)
             .expect("rpc call send_transaction")
             .pack()
     }
 
-    pub fn send_transaction_result(&self, tx: Transaction) -> Result<H256, Error> {
+    pub fn send_transaction_result(&self, tx: Transaction) -> Result<H256, AnyError> {
         self.inner
             .send_transaction(tx, Some("passthrough".to_string()))
     }
@@ -196,7 +189,7 @@ impl RpcClient {
             .expect("rpc call dry_run_transaction")
     }
 
-    pub fn broadcast_transaction(&self, tx: Transaction, cycles: Cycle) -> Result<H256, Error> {
+    pub fn broadcast_transaction(&self, tx: Transaction, cycles: Cycle) -> Result<H256, AnyError> {
         self.inner.broadcast_transaction(tx, cycles)
     }
 
@@ -240,60 +233,11 @@ impl RpcClient {
             .pack()
     }
 
-    pub fn get_live_cells_by_lock_hash(
-        &self,
-        lock_hash: Byte32,
-        page: u64,
-        per_page: u64,
-        reverse_order: Option<bool>,
-    ) -> Vec<LiveCell> {
+    pub fn generate_block_with_template(&self, block_template: BlockTemplate) -> Byte32 {
         self.inner()
-            .get_live_cells_by_lock_hash(
-                lock_hash.unpack(),
-                page.into(),
-                per_page.into(),
-                reverse_order,
-            )
-            .expect("rpc call get_live_cells_by_lock_hash")
-    }
-
-    pub fn get_transactions_by_lock_hash(
-        &self,
-        lock_hash: Byte32,
-        page: u64,
-        per_page: u64,
-        reverse_order: Option<bool>,
-    ) -> Vec<CellTransaction> {
-        self.inner()
-            .get_transactions_by_lock_hash(
-                lock_hash.unpack(),
-                page.into(),
-                per_page.into(),
-                reverse_order,
-            )
-            .expect("rpc call get_transactions_by_lock_hash")
-    }
-
-    pub fn index_lock_hash(
-        &self,
-        lock_hash: Byte32,
-        index_from: Option<CoreBlockNumber>,
-    ) -> LockHashIndexState {
-        self.inner()
-            .index_lock_hash(lock_hash.unpack(), index_from.map(Into::into))
-            .expect("rpc call index_lock_hash")
-    }
-
-    pub fn deindex_lock_hash(&self, lock_hash: Byte32) {
-        self.inner()
-            .deindex_lock_hash(lock_hash.unpack())
-            .expect("rpc call deindex_lock_hash")
-    }
-
-    pub fn get_lock_hash_index_states(&self) -> Vec<LockHashIndexState> {
-        self.inner()
-            .get_lock_hash_index_states()
-            .expect("rpc call get_lock_hash_index_states")
+            .generate_block_with_template(block_template)
+            .expect("rpc call generate_block_with_template")
+            .pack()
     }
 
     pub fn calculate_dao_maximum_withdraw(
@@ -307,22 +251,10 @@ impl RpcClient {
             .into()
     }
 
-    pub fn get_cellbase_output_capacity_details(&self, hash: Byte32) -> Option<BlockReward> {
-        self.inner()
-            .get_cellbase_output_capacity_details(hash.unpack())
-            .expect("rpc call get_cellbase_output_capacity_details")
-    }
-
     pub fn get_block_economic_state(&self, hash: Byte32) -> Option<BlockEconomicState> {
         self.inner()
             .get_block_economic_state(hash.unpack())
             .expect("rpc call get_block_economic_state")
-    }
-
-    pub fn estimate_fee_rate(&self, expect_confirm_blocks: Uint64) -> EstimateResult {
-        self.inner()
-            .estimate_fee_rate(expect_confirm_blocks)
-            .expect("rpc call estimate_fee_rate")
     }
 }
 
@@ -335,12 +267,6 @@ jsonrpc!(pub struct Inner {
     pub fn get_transaction(&self, _hash: H256) -> Option<TransactionWithStatus>;
     pub fn get_block_hash(&self, _number: BlockNumber) -> Option<H256>;
     pub fn get_tip_header(&self) -> HeaderView;
-    pub fn get_cells_by_lock_hash(
-        &self,
-        _lock_hash: H256,
-        _from: BlockNumber,
-        _to: BlockNumber
-    ) -> Vec<CellOutputWithOutPoint>;
     pub fn get_live_cell(&self, _out_point: OutPoint, _with_data: bool) -> CellWithStatus;
     pub fn get_tip_block_number(&self) -> BlockNumber;
     pub fn get_current_epoch(&self) -> EpochView;
@@ -366,8 +292,7 @@ jsonrpc!(pub struct Inner {
     ) -> BlockTemplate;
     pub fn submit_block(&self, _work_id: String, _data: Block) -> H256;
     pub fn get_blockchain_info(&self) -> ChainInfo;
-    pub fn get_peers_state(&self) -> Vec<PeerState>;
-    pub fn compute_transaction_hash(&self, tx: Transaction) -> H256;
+    pub fn get_block_median_time(&self, block_hash: H256) -> Option<Timestamp>;
     pub fn dry_run_transaction(&self, _tx: Transaction) -> DryRunResult;
     pub fn send_transaction(&self, tx: Transaction, outputs_validator: Option<String>) -> H256;
     pub fn tx_pool_info(&self) -> TxPoolInfo;
@@ -379,15 +304,11 @@ jsonrpc!(pub struct Inner {
     pub fn process_block_without_verify(&self, _data: Block, broadcast: bool) -> Option<H256>;
     pub fn truncate(&self, target_tip_hash: H256) -> ();
     pub fn generate_block(&self, block_assembler_script: Option<Script>, block_assembler_message: Option<JsonBytes>) -> H256;
+    pub fn generate_block_with_template(&self, block_template: BlockTemplate) -> H256;
 
-    pub fn get_live_cells_by_lock_hash(&self, lock_hash: H256, page: Uint64, per_page: Uint64, reverse_order: Option<bool>) -> Vec<LiveCell>;
-    pub fn get_transactions_by_lock_hash(&self, lock_hash: H256, page: Uint64, per_page: Uint64, reverse_order: Option<bool>) -> Vec<CellTransaction>;
-    pub fn index_lock_hash(&self, lock_hash: H256, index_from: Option<BlockNumber>) -> LockHashIndexState;
-    pub fn deindex_lock_hash(&self, lock_hash: H256) -> ();
-    pub fn get_lock_hash_index_states(&self) -> Vec<LockHashIndexState>;
     pub fn calculate_dao_maximum_withdraw(&self, _out_point: OutPoint, _hash: H256) -> Capacity;
-    pub fn get_cellbase_output_capacity_details(&self, _hash: H256) -> Option<BlockReward>;
     pub fn get_block_economic_state(&self, _hash: H256) -> Option<BlockEconomicState>;
+    pub fn get_transaction_proof(&self, tx_hashes: Vec<H256>, block_hash: Option<H256>) -> TransactionProof;
+    pub fn verify_transaction_proof(&self, tx_proof: TransactionProof) -> Vec<H256>;
     pub fn broadcast_transaction(&self, tx: Transaction, cycles: Cycle) -> H256;
-    pub fn estimate_fee_rate(&self, expect_confirm_blocks: Uint64) -> EstimateResult;
 });

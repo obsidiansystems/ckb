@@ -1,3 +1,4 @@
+//! Error module
 use p2p::{
     error::{
         DialerErrorKind, ListenErrorKind, ProtocolHandleErrorKind, SendErrorKind,
@@ -10,48 +11,63 @@ use std::fmt;
 use std::fmt::Display;
 use std::io::Error as IoError;
 
+/// Alias result on network module
 pub type Result<T> = ::std::result::Result<T, Error>;
 
+/// All error on network module
 #[derive(Debug)]
 pub enum Error {
+    /// Peer error
     Peer(PeerError),
+    /// Io error
     Io(IoError),
+    /// Error from tentacle
     P2P(P2PError),
-    Addr(AddrError),
+    /// Dail error
     Dial(String),
+    /// Peer store error
     PeerStore(PeerStoreError),
 }
 
+/// Error from tentacle
 #[derive(Debug)]
 pub enum P2PError {
+    /// Not support transport or some other error
     Transport(TransportErrorKind),
+    /// Handle panic or other error
     Protocol(ProtocolHandleErrorKind),
+    /// Dail error
     Dail(DialerErrorKind),
+    /// Listen error
     Listen(ListenErrorKind),
+    /// Net shutdown or too many messages blocked on
     Send(SendErrorKind),
 }
 
+/// Peer store error
 #[derive(Debug)]
 pub enum PeerStoreError {
-    /// indicate the peer store is full
+    /// Indicate the peer store is full
     EvictionFailed,
+    /// File data is not json format
     Serde(serde_json::Error),
 }
 
+/// Peer error
 #[derive(Debug, Eq, PartialEq)]
 pub enum PeerError {
+    /// Session already exists
     SessionExists(SessionId),
+    /// Peer id exist
     PeerIdExists(PeerId),
+    /// Non-reserved peers
     NonReserved,
+    /// Peer is banned
     Banned,
+    /// Reach max inbound limit
     ReachMaxInboundLimit,
+    /// Reach max outbound limit
     ReachMaxOutboundLimit,
-}
-
-#[derive(Debug)]
-pub enum AddrError {
-    MissingIP,
-    MissingPort,
 }
 
 impl From<PeerStoreError> for Error {
@@ -75,12 +91,6 @@ impl From<IoError> for Error {
 impl From<P2PError> for Error {
     fn from(err: P2PError) -> Error {
         Error::P2P(err)
-    }
-}
-
-impl From<AddrError> for Error {
-    fn from(err: AddrError) -> Error {
-        Error::Addr(err)
     }
 }
 

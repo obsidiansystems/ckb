@@ -1,6 +1,7 @@
 use crate::Work;
 use ckb_app_config::MinerClientConfig;
 use ckb_channel::Sender;
+use ckb_error::AnyError;
 use ckb_jsonrpc_types::{
     error::Error as RpcFail, error::ErrorCode as RpcFailCode, id::Id, params::Params,
     request::MethodCall, response::Output, version::Version, Block as JsonBlock, BlockTemplate,
@@ -8,7 +9,6 @@ use ckb_jsonrpc_types::{
 use ckb_logger::{debug, error, warn};
 use ckb_stop_handler::{SignalSender, StopHandler};
 use ckb_types::{packed::Block, H256};
-use failure::Error;
 use futures::sync::{mpsc, oneshot};
 use hyper::error::Error as HyperError;
 use hyper::header::{HeaderValue, CONTENT_TYPE};
@@ -57,6 +57,10 @@ impl Rpc {
                 *req.uri_mut() = req_url;
                 req.headers_mut()
                     .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                if let Some(value) = parse_authorization(&url) {
+                    req.headers_mut()
+                        .append(hyper::header::AUTHORIZATION, value);
+                }
 
                 let request = client
                     .request(req)
@@ -73,7 +77,7 @@ impl Rpc {
 
         Rpc {
             sender,
-            stop: StopHandler::new(SignalSender::Future(stop), thread),
+            stop: StopHandler::new(SignalSender::Future(stop), Some(thread)),
         }
     }
 
@@ -106,15 +110,21 @@ impl Drop for Rpc {
     }
 }
 
+/// TODO(doc): @quake
 #[derive(Debug, Clone)]
 pub struct Client {
+    /// TODO(doc): @quake
     pub current_work_id: Option<u64>,
+    /// TODO(doc): @quake
     pub new_work_tx: Sender<Work>,
+    /// TODO(doc): @quake
     pub config: MinerClientConfig,
+    /// TODO(doc): @quake
     pub rpc: Rpc,
 }
 
 impl Client {
+    /// TODO(doc): @quake
     pub fn new(new_work_tx: Sender<Work>, config: MinerClientConfig) -> Client {
         let uri: Uri = config.rpc_url.parse().expect("valid rpc url");
 
@@ -138,6 +148,7 @@ impl Client {
         self.rpc.request(method, params)
     }
 
+    /// TODO(doc): @quake
     pub fn submit_block(&self, work_id: &str, block: Block) {
         let future = self.send_submit_block_request(work_id, block);
         if self.config.block_on_submit {
@@ -155,6 +166,7 @@ impl Client {
         }
     }
 
+    /// TODO(doc): @quake
     pub fn poll_block_template(&mut self) {
         loop {
             debug!("poll block template...");
@@ -163,6 +175,7 @@ impl Client {
         }
     }
 
+    /// TODO(doc): @quake
     pub fn try_update_block_template(&mut self) {
         match self.get_block_template().wait() {
             Ok(block_template) => {
@@ -201,7 +214,7 @@ impl Client {
         self.rpc.request(method, params).and_then(parse_response)
     }
 
-    fn notify_new_work(&self, block_template: BlockTemplate) -> Result<(), Error> {
+    fn notify_new_work(&self, block_template: BlockTemplate) -> Result<(), AnyError> {
         let work: Work = block_template.into();
         self.new_work_tx.send(work)?;
         Ok(())
@@ -214,5 +227,21 @@ fn parse_response<T: serde::de::DeserializeOwned>(output: Output) -> Result<T, R
             serde_json::from_value::<T>(success.result).map_err(RpcError::Json)
         }
         Output::Failure(failure) => Err(RpcError::Fail(failure.error)),
+    }
+}
+
+fn parse_authorization(url: &Uri) -> Option<HeaderValue> {
+    let a: Vec<&str> = url.authority_part()?.as_str().split('@').collect();
+    if a.len() >= 2 {
+        if a[0].is_empty() {
+            return None;
+        }
+        let mut encoded = "Basic ".to_string();
+        base64::encode_config_buf(a[0], base64::STANDARD, &mut encoded);
+        let mut header = HeaderValue::from_str(&encoded).unwrap();
+        header.set_sensitive(true);
+        Some(header)
+    } else {
+        None
     }
 }

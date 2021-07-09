@@ -2,12 +2,12 @@ use std::fs;
 use std::io::{self, Read};
 
 use crate::helper::prompt;
-use ckb_app_config::{ExitCode, InitArgs};
+use ckb_app_config::{cli, AppConfig, ExitCode, InitArgs};
 use ckb_chain_spec::ChainSpec;
 use ckb_jsonrpc_types::ScriptHashType;
 use ckb_resource::{
-    Resource, TemplateContext, AVAILABLE_SPECS, CKB_CONFIG_FILE_NAME, MINER_CONFIG_FILE_NAME,
-    SPEC_DEV_FILE_NAME,
+    Resource, TemplateContext, AVAILABLE_SPECS, CKB_CONFIG_FILE_NAME, DB_OPTIONS_FILE_NAME,
+    MINER_CONFIG_FILE_NAME, SPEC_DEV_FILE_NAME,
 };
 use ckb_types::{prelude::*, H256};
 
@@ -22,6 +22,11 @@ pub fn init(args: InitArgs) -> Result<(), ExitCode> {
             println!("{}", spec);
         }
         return Ok(());
+    }
+
+    if args.chain != "dev" && !args.customize_spec.is_unset() {
+        eprintln!("Customizing consensus parameters for chain spec only works for dev chains.");
+        return Err(ExitCode::Failure);
     }
 
     let exported = Resource::exported_in(&args.root_dir);
@@ -125,7 +130,7 @@ pub fn init(args: InitArgs) -> Result<(), ExitCode> {
                 "# secp256k1_blake160_sighash_all example:\n\
                  # [block_assembler]\n\
                  # code_hash = \"{}\"\n\
-                 # args = \"ckb cli blake160 <compressed-pubkey>\"\n\
+                 # args = \"ckb-cli util blake2b --prefix-160 <compressed-pubkey>\"\n\
                  # hash_type = \"{}\"\n\
                  # message = \"A 0x-prefixed hex string\"",
                 default_code_hash_option.unwrap_or_default(),
@@ -184,13 +189,32 @@ pub fn init(args: InitArgs) -> Result<(), ExitCode> {
         }
     } else if args.chain == "dev" {
         println!("create {}", SPEC_DEV_FILE_NAME);
-        Resource::bundled(SPEC_DEV_FILE_NAME.to_string()).export(&context, &args.root_dir)?;
+        let bundled = Resource::bundled(SPEC_DEV_FILE_NAME.to_string());
+        let kvs = args.customize_spec.key_value_pairs();
+        let context_spec =
+            TemplateContext::new("customize", kvs.iter().map(|(k, v)| (*k, v.as_str())));
+        bundled.export(&context_spec, &args.root_dir)?;
     }
 
     println!("create {}", CKB_CONFIG_FILE_NAME);
     Resource::bundled_ckb_config().export(&context, &args.root_dir)?;
     println!("create {}", MINER_CONFIG_FILE_NAME);
     Resource::bundled_miner_config().export(&context, &args.root_dir)?;
+    println!("create {}", DB_OPTIONS_FILE_NAME);
+    Resource::bundled_db_options().export(&context, &args.root_dir)?;
+
+    let genesis_hash = AppConfig::load_for_subcommand(args.root_dir, cli::CMD_INIT)?
+        .chain_spec()?
+        .build_genesis()
+        .map_err(|err| {
+            eprintln!(
+                "couldn't build genesis from generated chain spec, since {}",
+                err
+            );
+            ExitCode::Failure
+        })?
+        .hash();
+    println!("Genesis Hash: {:#x}", genesis_hash);
 
     Ok(())
 }

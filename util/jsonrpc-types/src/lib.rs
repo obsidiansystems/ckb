@@ -1,3 +1,4 @@
+//! Wrappers for JSON serialization.
 mod alert;
 mod block_template;
 mod blockchain;
@@ -6,52 +7,64 @@ mod cell;
 mod chain_info;
 mod debug;
 mod experiment;
+mod fee_rate;
 mod fixed_bytes;
-mod indexer;
 mod net;
 mod pool;
 mod primitive;
 mod proposal_short_id;
-mod sync;
+mod subscription;
 mod uints;
 
-pub use self::alert::{Alert, AlertMessage};
+pub use self::alert::{Alert, AlertId, AlertMessage, AlertPriority};
 pub use self::block_template::{
     BlockTemplate, CellbaseTemplate, TransactionTemplate, UncleTemplate,
 };
 pub use self::blockchain::{
-    Block, BlockEconomicState, BlockIssuance, BlockReward, BlockView, CellDep, CellInput,
-    CellOutput, DepType, EpochView, Header, HeaderView, MinerReward, OutPoint, Script,
-    ScriptHashType, Status, Transaction, TransactionView, TransactionWithStatus, TxStatus,
-    UncleBlock, UncleBlockView,
+    Block, BlockEconomicState, BlockIssuance, BlockView, CellDep, CellInput, CellOutput, Consensus,
+    DepType, EpochView, Header, HeaderView, MerkleProof, MinerReward, OutPoint, ProposalWindow,
+    Script, ScriptHashType, Status, Transaction, TransactionProof, TransactionView,
+    TransactionWithStatus, TxStatus, UncleBlock, UncleBlockView,
 };
 pub use self::bytes::JsonBytes;
-pub use self::cell::{CellOutputWithOutPoint, CellWithStatus};
+pub use self::cell::{CellData, CellInfo, CellWithStatus};
 pub use self::chain_info::ChainInfo;
 pub use self::debug::{ExtraLoggerConfig, MainLoggerConfig};
-pub use self::experiment::{DryRunResult, EstimateResult};
+pub use self::experiment::DryRunResult;
+pub use self::fee_rate::FeeRateDef;
 pub use self::fixed_bytes::Byte32;
-pub use self::indexer::{
-    CellTransaction, LiveCell, LockHashCapacity, LockHashIndexState, TransactionPoint,
-};
 pub use self::net::{
     BannedAddr, LocalNode, LocalNodeProtocol, NodeAddress, PeerSyncState, RemoteNode,
     RemoteNodeProtocol, SyncState,
 };
-pub use self::pool::{OutputsValidator, TxPoolInfo};
+pub use self::pool::{
+    OutputsValidator, PoolTransactionEntry, PoolTransactionReject, RawTxPool, TxPoolIds,
+    TxPoolInfo, TxPoolVerbosity, TxVerbosity,
+};
 pub use self::proposal_short_id::ProposalShortId;
-pub use self::sync::PeerState;
+pub use self::subscription::Topic;
 pub use self::uints::{Uint128, Uint32, Uint64};
 pub use jsonrpc_core::types::{error, id, params, request, response, version};
 pub use primitive::{
-    BlockNumber, Capacity, Cycle, EpochNumber, EpochNumberWithFraction, FeeRate, Timestamp, Version,
+    AsEpochNumberWithFraction, BlockNumber, Capacity, Cycle, EpochNumber, EpochNumberWithFraction,
+    Timestamp, Version,
 };
 pub use serde::{Deserialize, Serialize};
 
+/// This is a wrapper for JSON serialization to select the format between Json and Hex.
+///
+/// ## Examples
+///
+/// `ResponseFormat<BlockView, Block>` returns the block in its Json format or molecule serialized
+/// Hex format.
 pub enum ResponseFormat<V, P> {
-    // ckb_jsonrpc_types::(BlockView / HeaderView / etc)
+    /// Serializes `V` as Json
     Json(V),
-    // ckb_types::packed::(Block / Header / etc)
+    /// Serializes `P` as Hex.
+    ///
+    /// `P` is first serialized by molecule into binary.
+    ///
+    /// The binary is then encoded as a 0x-prefixed hex string.
     Hex(P),
 }
 

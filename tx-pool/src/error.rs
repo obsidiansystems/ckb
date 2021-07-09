@@ -1,57 +1,42 @@
-use ckb_error::{Error, ErrorKind};
-use ckb_types::packed::Byte32;
-use failure::Fail;
-use tokio::sync::mpsc::error::TrySendError as TokioTrySendError;
+//! The error type for Tx-pool operations
 
-#[derive(Debug, PartialEq, Clone, Eq, Fail)]
-pub enum Reject {
-    /// The fee rate of transaction is lower than min fee rate
-    #[fail(
-        display = "Transaction fee rate must >= {} shannons/KB, got: {}",
-        _0, _1
-    )]
-    LowFeeRate(u64, u64),
+use ckb_error::{
+    impl_error_conversion_with_adaptor, impl_error_conversion_with_kind, prelude::*, Error,
+    InternalError, InternalErrorKind, OtherError,
+};
+pub use ckb_types::core::tx_pool::Reject;
+use tokio::sync::{mpsc::error::TrySendError, oneshot::error::RecvError};
 
-    #[fail(display = "Transaction exceeded maximum ancestors count limit, try send it later")]
-    ExceededMaximumAncestorsCount,
-
-    #[fail(
-        display = "Transaction pool exceeded maximum {} limit({}), try send it later",
-        _0, _1
-    )]
-    Full(String, u64),
-
-    #[fail(display = "Transaction({}) already exist in transaction_pool", _0)]
-    Duplicated(Byte32),
-
-    #[fail(display = "Malformed {} transaction", _0)]
-    Malformed(String),
-}
-
-impl From<Reject> for Error {
-    fn from(error: Reject) -> Self {
-        error.context(ErrorKind::SubmitTransaction).into()
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, Fail)]
+/// The error type for block assemble related
+#[derive(Error, Debug, PartialEq, Clone, Eq)]
 pub enum BlockAssemblerError {
-    #[fail(display = "InvalidInput")]
+    /// Input is invalid
+    #[error("InvalidInput")]
     InvalidInput,
-    #[fail(display = "InvalidParams {}", _0)]
+    /// Parameters is invalid
+    #[error("InvalidParams {0}")]
     InvalidParams(String),
-    #[fail(display = "Disabled")]
+    /// BlockAssembler is disabled
+    #[error("Disabled")]
     Disabled,
 }
 
-#[derive(Fail, Debug)]
-#[fail(display = "TrySendError {}.", _0)]
-pub struct TrySendError(String);
+impl_error_conversion_with_kind!(
+    BlockAssemblerError,
+    InternalErrorKind::BlockAssembler,
+    InternalError
+);
 
-pub fn handle_try_send_error<T>(error: TokioTrySendError<T>) -> (T, TrySendError) {
-    let e = TrySendError(format!("{}", error));
+impl_error_conversion_with_adaptor!(BlockAssemblerError, InternalError, Error);
+
+pub(crate) fn handle_try_send_error<T>(error: TrySendError<T>) -> (T, OtherError) {
+    let e = OtherError::new(format!("TrySendError {}", error));
     let m = match error {
-        TokioTrySendError::Full(t) | TokioTrySendError::Closed(t) => t,
+        TrySendError::Full(t) | TrySendError::Closed(t) => t,
     };
     (m, e)
+}
+
+pub(crate) fn handle_recv_error(error: RecvError) -> OtherError {
+    OtherError::new(format!("RecvError {}", error))
 }

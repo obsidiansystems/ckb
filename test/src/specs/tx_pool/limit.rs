@@ -1,8 +1,9 @@
+use crate::util::mining::{mine, mine_until_out_bootstrap_period};
 use crate::utils::assert_send_transaction_fail;
-use crate::{Net, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
-use ckb_app_config::CKBAppConfig;
-use ckb_fee_estimator::FeeRate;
-use log::info;
+use crate::{Node, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
+
+use ckb_logger::info;
+use ckb_types::core::FeeRate;
 
 pub struct SizeLimit;
 
@@ -10,13 +11,11 @@ const MAX_CYCLES_FOR_SIZE_LIMIT: u64 = 200_000_000_000;
 const MAX_MEM_SIZE_FOR_SIZE_LIMIT: usize = 2000;
 
 impl Spec for SizeLimit {
-    crate::name!("size_limit");
-
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
 
         info!("Generate DEFAULT_TX_PROPOSAL_WINDOW block on node");
-        node.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node);
 
         info!("Generate 1 tx on node");
         let mut txs_hash = Vec::new();
@@ -51,19 +50,15 @@ impl Spec for SizeLimit {
         assert_send_transaction_fail(node, &tx, "Transaction pool exceeded maximum size limit");
 
         node.assert_tx_pool_serialized_size(max_tx_num * one_tx_size);
-        (0..DEFAULT_TX_PROPOSAL_WINDOW.0).for_each(|_| {
-            node.generate_block();
-        });
-        node.generate_block();
+        mine(&node, DEFAULT_TX_PROPOSAL_WINDOW.0);
+        mine(&node, 1);
         node.assert_tx_pool_serialized_size(0);
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
-        Box::new(|config| {
-            config.tx_pool.max_mem_size = MAX_MEM_SIZE_FOR_SIZE_LIMIT;
-            config.tx_pool.max_cycles = MAX_CYCLES_FOR_SIZE_LIMIT;
-            config.tx_pool.min_fee_rate = FeeRate::zero();
-        })
+    fn modify_app_config(&self, config: &mut ckb_app_config::CKBAppConfig) {
+        config.tx_pool.max_mem_size = MAX_MEM_SIZE_FOR_SIZE_LIMIT;
+        config.tx_pool.max_cycles = MAX_CYCLES_FOR_SIZE_LIMIT;
+        config.tx_pool.min_fee_rate = FeeRate::zero();
     }
 }
 
@@ -73,13 +68,11 @@ const MAX_CYCLES_FOR_CYCLE_LIMIT: u64 = 6000;
 const MAX_MEM_SIZE_FOR_CYCLE_LIMIT: usize = 20_000_000;
 
 impl Spec for CyclesLimit {
-    crate::name!("cycles_limit");
-
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
 
         info!("Generate DEFAULT_TX_PROPOSAL_WINDOW block on node");
-        node.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node);
 
         info!("Generate 1 tx on node");
         let mut txs_hash = Vec::new();
@@ -114,18 +107,14 @@ impl Spec for CyclesLimit {
         assert_send_transaction_fail(node, &tx, "Transaction pool exceeded maximum cycles limit");
 
         node.assert_tx_pool_cycles(max_tx_num * one_tx_cycles);
-        (0..DEFAULT_TX_PROPOSAL_WINDOW.0).for_each(|_| {
-            node.generate_block();
-        });
-        node.generate_block();
+        mine(&node, DEFAULT_TX_PROPOSAL_WINDOW.0);
+        mine(&node, 1);
         node.assert_tx_pool_cycles(0);
     }
 
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
-        Box::new(|config| {
-            config.tx_pool.max_mem_size = MAX_MEM_SIZE_FOR_CYCLE_LIMIT;
-            config.tx_pool.max_cycles = MAX_CYCLES_FOR_CYCLE_LIMIT;
-            config.tx_pool.min_fee_rate = FeeRate::zero();
-        })
+    fn modify_app_config(&self, config: &mut ckb_app_config::CKBAppConfig) {
+        config.tx_pool.max_mem_size = MAX_MEM_SIZE_FOR_CYCLE_LIMIT;
+        config.tx_pool.max_cycles = MAX_CYCLES_FOR_CYCLE_LIMIT;
+        config.tx_pool.min_fee_rate = FeeRate::zero();
     }
 }

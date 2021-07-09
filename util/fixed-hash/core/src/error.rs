@@ -1,15 +1,29 @@
-use failure::Fail;
+//! Conversion errors.
 
-#[derive(Debug, Fail)]
+use thiserror::Error;
+
+/// The associated error of [`FromStr`] which can be returned from parsing a string.
+///
+/// [`FromStr`]: https://doc.rust-lang.org/std/str/trait.FromStr.html#associatedtype.Err
+#[derive(Error, Debug)]
 pub enum FromStrError {
-    #[fail(display = "invalid character code `{}` at {}", chr, idx)]
-    InvalidCharacter { chr: u8, idx: usize },
-    #[fail(display = "invalid length: {}", _0)]
+    /// Invalid character.
+    #[error("invalid character code `{chr}` at {idx}")]
+    InvalidCharacter {
+        /// The value of the invalid character.
+        chr: u8,
+        /// The index of the invalid character.
+        idx: usize,
+    },
+    /// Invalid length.
+    #[error("invalid length: {0}")]
     InvalidLength(usize),
 }
 
-#[derive(Debug, Fail)]
+/// The error which can be returned when convert a byte slice back into a Hash.
+#[derive(Error, Debug)]
 pub enum FromSliceError {
-    #[fail(display = "invalid length: {}", _0)]
+    /// Invalid length.
+    #[error("invalid length: {0}")]
     InvalidLength(usize),
 }

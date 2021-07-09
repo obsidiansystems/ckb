@@ -97,12 +97,6 @@ impl Node {
 
 fn net_service_start(name: String) -> Node {
     let config = NetworkConfig {
-        listen_addresses: vec![],
-        public_addresses: vec![],
-        bootnodes: vec![],
-        dns_seeds: vec![],
-        whitelist_peers: vec![],
-        whitelist_only: false,
         max_peers: 19,
         max_outbound_peers: 5,
         path: tempdir()
@@ -113,10 +107,9 @@ fn net_service_start(name: String) -> Node {
         ping_timeout_secs: 20,
         connect_outbound_interval_secs: 1,
         discovery_local_address: true,
-        upnp: false,
         bootnode_mode: true,
-        max_send_buffer: None,
-        sync: None,
+        reuse: true,
+        ..Default::default()
     };
 
     let network_state =
@@ -148,13 +141,10 @@ fn net_service_start(name: String) -> Node {
     let ping_timeout = Duration::from_secs(10);
 
     let ping_network_state = Arc::clone(&network_state);
-    let ping_meta = SupportProtocols::Ping.build_meta_with_service_handle(move || {
-        ProtocolHandle::Callback(Box::new(PingHandler::new(
-            ping_interval,
-            ping_timeout,
-            ping_network_state,
-        )))
-    });
+    let (ping_handler, _ping_controller) =
+        PingHandler::new(ping_interval, ping_timeout, ping_network_state);
+    let ping_meta = SupportProtocols::Ping
+        .build_meta_with_service_handle(move || ProtocolHandle::Callback(Box::new(ping_handler)));
 
     // Discovery protocol
     let addr_mgr = DiscoveryAddressManager {
@@ -162,7 +152,7 @@ fn net_service_start(name: String) -> Node {
         discovery_local_address: config.discovery_local_address,
     };
     let disc_meta = SupportProtocols::Discovery.build_meta_with_service_handle(move || {
-        ProtocolHandle::Callback(Box::new(DiscoveryProtocol::new(addr_mgr)))
+        ProtocolHandle::Callback(Box::new(DiscoveryProtocol::new(addr_mgr, None)))
     });
 
     // Identify protocol
@@ -175,7 +165,7 @@ fn net_service_start(name: String) -> Node {
     // Feeler protocol
     let feeler_meta = SupportProtocols::Feeler.build_meta_with_service_handle({
         let network_state = Arc::clone(&network_state);
-        move || ProtocolHandle::Both(Box::new(Feeler::new(Arc::clone(&network_state))))
+        move || ProtocolHandle::Callback(Box::new(Feeler::new(Arc::clone(&network_state))))
     });
 
     let service_builder = ServiceBuilder::default()
@@ -200,10 +190,9 @@ fn net_service_start(name: String) -> Node {
 
     thread::spawn(move || {
         let num_threads = ::std::cmp::max(num_cpus::get(), 4);
-        let mut rt = tokio::runtime::Builder::new()
-            .core_threads(num_threads)
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(num_threads)
             .enable_all()
-            .threaded_scheduler()
             .build()
             .unwrap();
         rt.block_on(async move {
@@ -356,14 +345,15 @@ fn test_discovery_behavior() {
         &node2,
         TargetProtocol::Single(SupportProtocols::Identify.protocol_id()),
     );
+    wait_connect_state(&node1, 1);
+
     node3.dial(
         &node2,
         TargetProtocol::Single(SupportProtocols::Identify.protocol_id()),
     );
-
-    wait_connect_state(&node1, 1);
-    wait_connect_state(&node2, 2);
     wait_connect_state(&node3, 1);
+
+    wait_connect_state(&node2, 2);
 
     wait_discovery(&node3);
 

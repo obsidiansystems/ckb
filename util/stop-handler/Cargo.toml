@@ -1,13 +1,16 @@
 [package]
 name = "ckb-stop-handler"
-version = "0.36.0-pre"
+version = "0.43.0"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
 license = "MIT"
+description = "TODO(doc): @keroro520 crate description"
+homepage = "https://github.com/nervosnetwork/ckb"
+repository = "https://github.com/nervosnetwork/ckb"
 
 [dependencies]
 parking_lot = "=0.7.1"
-ckb-logger = { path = "../logger" }
+ckb-logger = { path = "../logger", version = "= 0.43.0" }
 futures = "0.1"
-tokio = { version = "0.2", features = ["sync", "blocking", "rt-threaded"] }
-ckb-channel = { path = "../channel" }
+tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
+ckb-channel = { path = "../channel", version = "= 0.43.0" }

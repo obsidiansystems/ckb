@@ -1,36 +1,24 @@
-use failure::Context;
+//! Multi-signature error.
 
-#[derive(Debug)]
-pub struct Error {
-    inner: Context<ErrorKind>,
-}
+use ckb_error::{def_error_base_on_kind, prelude::*};
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Fail)]
+/// Multi-signature error kinds.
+#[derive(Error, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ErrorKind {
-    #[fail(display = "The count of sigs should less than pks.")]
+    /// The count of signatures should be less than the count of private keys.
+    #[error("The count of sigs should less than pks.")]
     SigCountOverflow,
-    #[fail(display = "The count of sigs less than threshold.")]
+    /// The count of signatures is less than the threshold.
+    #[error("The count of sigs less than threshold.")]
     SigNotEnough,
-    #[fail(display = "Failed to meet threshold {:?}.", _0)]
-    Threshold { threshold: usize, pass_sigs: usize },
+    /// The verified signatures count is less than the threshold.
+    #[error("Failed to meet threshold {threshold}, actual: {pass_sigs}.")]
+    Threshold {
+        /// The required count of valid signatures.
+        threshold: usize,
+        /// The actual count of valid signatures.
+        pass_sigs: usize,
+    },
 }
 
-impl Error {
-    pub fn kind(&self) -> ErrorKind {
-        *self.inner.get_context()
-    }
-}
-
-impl From<ErrorKind> for Error {
-    fn from(kind: ErrorKind) -> Error {
-        Error {
-            inner: Context::new(kind),
-        }
-    }
-}
-
-impl From<Context<ErrorKind>> for Error {
-    fn from(inner: Context<ErrorKind>) -> Error {
-        Error { inner }
-    }
-}
+def_error_base_on_kind!(Error, ErrorKind, "Multi-signature error.");

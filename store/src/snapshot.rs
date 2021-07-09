@@ -2,12 +2,16 @@ use crate::cache::StoreCache;
 use crate::store::ChainStore;
 use ckb_db::{
     iter::{DBIter, DBIterator, IteratorMode},
-    Col, DBPinnableSlice, RocksDBSnapshot,
+    DBPinnableSlice, RocksDBSnapshot,
 };
+use ckb_db_schema::Col;
+use ckb_freezer::Freezer;
 use std::sync::Arc;
 
+/// TODO(doc): @quake
 pub struct StoreSnapshot {
     pub(crate) inner: RocksDBSnapshot,
+    pub(crate) freezer: Option<Freezer>,
     pub(crate) cache: Arc<StoreCache>,
 }
 
@@ -16,6 +20,10 @@ impl<'a> ChainStore<'a> for StoreSnapshot {
 
     fn cache(&'a self) -> Option<&'a StoreCache> {
         Some(&self.cache)
+    }
+
+    fn freezer(&'a self) -> Option<&'a Freezer> {
+        self.freezer.as_ref()
     }
 
     fn get(&'a self, col: Col, key: &[u8]) -> Option<Self::Vector> {

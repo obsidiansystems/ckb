@@ -26,6 +26,7 @@ struct DepGroupCell {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SpecHashes {
+    pub spec_hash: H256,
     pub genesis: H256,
     pub cellbase: H256,
     pub system_cells: Vec<SystemCell>,
@@ -101,6 +102,7 @@ impl TryFrom<ChainSpec> for SpecHashes {
             .collect::<Vec<_>>();
 
         Ok(SpecHashes {
+            spec_hash: spec.hash.unpack(),
             genesis: consensus.genesis_hash().unpack(),
             cellbase: cellbase.hash().unpack(),
             system_cells: cells_hashes,
@@ -109,7 +111,7 @@ impl TryFrom<ChainSpec> for SpecHashes {
     }
 }
 
-pub fn list_hashes<'m>(root_dir: PathBuf, matches: &ArgMatches<'m>) -> Result<(), ExitCode> {
+pub fn list_hashes(root_dir: PathBuf, matches: &ArgMatches<'_>) -> Result<(), ExitCode> {
     let mut specs = Vec::new();
 
     if matches.is_present(cli::ARG_BUNDLED) {

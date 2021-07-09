@@ -1,14 +1,18 @@
 [package]
 name = "ckb-rational"
-version = "0.36.0-pre"
+version = "0.43.0"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
+description = "Rational numbers."
+homepage = "https://github.com/nervosnetwork/ckb"
+repository = "https://github.com/nervosnetwork/ckb"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 numext-fixed-uint = { version = "0.1", features = ["support_rand", "support_heapsize", "support_serde"] }
+serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "0.9"

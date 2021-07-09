@@ -1,7 +1,7 @@
 use crate::relayer::block_transactions_process::BlockTransactionsProcess;
-use crate::relayer::tests::helper::{build_chain, MockProtocalContext};
+use crate::relayer::tests::helper::{build_chain, MockProtocolContext};
 use crate::{Status, StatusCode};
-use ckb_network::PeerIndex;
+use ckb_network::{PeerIndex, SupportProtocols};
 use ckb_store::ChainStore;
 use ckb_tx_pool::{PlugTarget, TxEntry};
 use ckb_types::prelude::*;
@@ -13,7 +13,7 @@ use ckb_types::{
         IndexTransaction, OutPoint,
     },
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
@@ -49,7 +49,7 @@ fn test_accept_block() {
         .transactions(vec![tx1, tx2.clone()])
         .uncle(uncle.as_uncle())
         .build();
-    let prefilled = HashSet::from_iter(vec![0usize].into_iter());
+    let prefilled = vec![0usize].into_iter().collect();
 
     let compact_block = CompactBlock::build_from_block(&block, &prefilled);
     let hash = compact_block.header().calc_header_hash();
@@ -74,13 +74,13 @@ fn test_accept_block() {
         .uncles(vec![uncle.as_uncle().data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
 
@@ -115,7 +115,7 @@ fn test_unknown_request() {
         .transactions(vec![tx1, tx2.clone()])
         .build();
 
-    let prefilled = HashSet::from_iter(vec![0usize].into_iter());
+    let prefilled = vec![0usize].into_iter().collect();
 
     let compact_block = CompactBlock::build_from_block(&block, &prefilled);
 
@@ -136,13 +136,13 @@ fn test_unknown_request() {
         .transactions(vec![tx2.data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
     assert_eq!(process.execute(), Status::ignored());
@@ -200,13 +200,13 @@ fn test_invalid_transaction_root() {
         .transactions(vec![tx2.data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
     assert_eq!(
@@ -266,13 +266,13 @@ fn test_collision_and_send_missing_indexes() {
         .transactions(vec![tx1, tx2.clone(), fake_tx])
         .build_unchecked();
 
-    let prefilled = HashSet::from_iter(vec![0usize].into_iter());
+    let prefilled = vec![0usize].into_iter().collect();
 
     let compact_block = CompactBlock::build_from_block(&block, &prefilled);
 
     {
         let tx_pool = relayer.shared.shared().tx_pool_controller();
-        let entry = TxEntry::new(tx3.clone(), 0, Capacity::shannons(0), 0, vec![]);
+        let entry = TxEntry::dummy_resolve(tx3.clone(), 0, Capacity::shannons(0), 0);
         tx_pool
             .plug_entry(vec![entry], PlugTarget::Pending)
             .unwrap();
@@ -285,7 +285,7 @@ fn test_collision_and_send_missing_indexes() {
             hash.clone(),
             (
                 compact_block,
-                HashMap::from_iter(vec![(peer_index, (vec![1], vec![]))]),
+                vec![(peer_index, (vec![1], vec![]))].into_iter().collect(),
             ),
         );
     }
@@ -295,13 +295,13 @@ fn test_collision_and_send_missing_indexes() {
         .transactions(vec![tx2.data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
     assert_eq!(
@@ -317,11 +317,7 @@ fn test_collision_and_send_missing_indexes() {
     let data = message.as_bytes();
 
     // send missing indexes messages
-    assert!(nc
-        .as_ref()
-        .sent_messages_to
-        .borrow()
-        .contains(&(peer_index, data)));
+    assert!(nc.has_sent(SupportProtocols::Relay.protocol_id(), peer_index, data));
 
     // update cached missing_index
     {
@@ -342,13 +338,13 @@ fn test_collision_and_send_missing_indexes() {
         .transactions(vec![tx2.data(), tx3.data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         new_block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
     assert_eq!(
@@ -384,7 +380,7 @@ fn test_missing() {
         .transactions(vec![tx1, tx2.clone(), tx3])
         .build();
 
-    let prefilled = HashSet::from_iter(vec![0usize].into_iter());
+    let prefilled = vec![0usize].into_iter().collect();
 
     let compact_block = CompactBlock::build_from_block(&block, &prefilled);
 
@@ -406,13 +402,13 @@ fn test_missing() {
         .transactions(vec![tx2.data()].pack())
         .build();
 
-    let mock_protocal_context = MockProtocalContext::default();
+    let mock_protocal_context = MockProtocolContext::new(SupportProtocols::Relay);
     let nc = Arc::new(mock_protocal_context);
 
     let process = BlockTransactionsProcess::new(
         block_transactions.as_reader(),
         &relayer,
-        Arc::<MockProtocalContext>::clone(&nc),
+        Arc::<MockProtocolContext>::clone(&nc),
         peer_index,
     );
     assert_eq!(
@@ -427,9 +423,9 @@ fn test_missing() {
     let message = packed::RelayMessage::new_builder().set(content).build();
 
     // send missing indexes messages
-    assert!(nc
-        .as_ref()
-        .sent_messages_to
-        .borrow()
-        .contains(&(peer_index, message.as_bytes())));
+    assert!(nc.has_sent(
+        SupportProtocols::Relay.protocol_id(),
+        peer_index,
+        message.as_bytes()
+    ));
 }

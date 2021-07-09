@@ -1,8 +1,8 @@
 use crate::peer_store::types::AddrInfo;
 use crate::NetworkState;
-use ckb_logger::{trace, warn};
+use ckb_logger::trace;
 use faketime::unix_time_as_millis;
-use futures::{Future, Stream};
+use futures::Future;
 use p2p::service::ServiceControl;
 use std::{
     pin::Pin,
@@ -51,8 +51,7 @@ impl OutboundPeerService {
             paddrs.truncate(count as usize);
             for paddr in &mut paddrs {
                 // mark addr as tried
-                let key = paddr.ip_port();
-                if let Some(paddr) = peer_store.mut_addr_manager().get_mut(&key) {
+                if let Some(paddr) = peer_store.mut_addr_manager().get_mut(&paddr.addr) {
                     paddr.mark_tried(now_ms);
                 }
             }
@@ -66,29 +65,19 @@ impl OutboundPeerService {
         );
 
         for paddr in attempt_peers {
-            let AddrInfo { peer_id, addr, .. } = paddr;
+            let AddrInfo { addr, .. } = paddr;
             if is_feeler {
-                self.network_state
-                    .dial_feeler(&self.p2p_control, &peer_id, addr);
+                self.network_state.dial_feeler(&self.p2p_control, addr);
             } else {
-                self.network_state
-                    .dial_identify(&self.p2p_control, &peer_id, addr);
+                self.network_state.dial_identify(&self.p2p_control, addr);
             }
         }
     }
 
     fn try_dial_whitelist(&self) {
         // This will never panic because network start has already been checked
-        for (peer_id, addr) in self
-            .network_state
-            .config
-            .whitelist_peers()
-            .expect("address must be correct")
-        {
-            if self.network_state.query_session_id(&peer_id).is_none() {
-                self.network_state
-                    .dial_identify(&self.p2p_control, &peer_id, addr);
-            }
+        for addr in self.network_state.config.whitelist_peers() {
+            self.network_state.dial_identify(&self.p2p_control, addr);
         }
     }
 
@@ -107,12 +96,12 @@ impl Future for OutboundPeerService {
         }
         let mut interval = self.interval.take().unwrap();
         loop {
-            match Pin::new(&mut interval).as_mut().poll_next(cx) {
-                Poll::Ready(Some(_tick)) => {
+            match interval.poll_tick(cx) {
+                Poll::Ready(_) => {
                     let last_connect = self
                         .last_connect
                         .map(|time| time.elapsed())
-                        .unwrap_or(Duration::from_secs(std::u64::MAX));
+                        .unwrap_or_else(|| Duration::from_secs(std::u64::MAX));
                     if last_connect > self.try_connect_interval {
                         let status = self.network_state.connection_status();
                         let new_outbound = status
@@ -134,10 +123,6 @@ impl Future for OutboundPeerService {
                         self.try_dial_observed();
                         self.last_connect = Some(Instant::now());
                     }
-                }
-                Poll::Ready(None) => {
-                    warn!("ckb outbound peer service stopped");
-                    return Poll::Ready(());
                 }
                 Poll::Pending => {
                     self.interval = Some(interval);

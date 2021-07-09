@@ -1,144 +1,139 @@
-use crate::utils::is_committed;
-use crate::{Net, Node, Spec, TestProtocol, DEFAULT_TX_PROPOSAL_WINDOW};
-use ckb_app_config::CKBAppConfig;
-use ckb_jsonrpc_types::{TransactionWithStatus, TxStatus};
+use crate::node::{disconnect_all, waiting_for_sync};
+use crate::util::cell::gen_spendable;
+use crate::util::check::{is_transaction_committed, is_transaction_pending};
+use crate::util::mining::{mine, mine_until_out_bootstrap_period, out_ibd_mode};
+use crate::util::transaction::always_success_transaction;
+use crate::{Node, Spec};
+use ckb_logger::info;
 use ckb_types::{
     core::{capacity_bytes, BlockView, Capacity, TransactionView},
     h256,
-    packed::Byte32,
     prelude::*,
     H256,
 };
-use failure::_core::time::Duration;
-use log::info;
 use std::thread::sleep;
+use std::time::Duration;
 
 pub struct ChainFork1;
 
 impl Spec for ChainFork1 {
-    crate::name!("chain_fork1");
-
-    crate::setup!(num_nodes: 2, connect_all: false);
+    crate::setup!(num_nodes: 2);
 
     // Test normal fork
     //                  1    2    3    4
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
 
         info!("Generate 2 blocks (A, B) on node0");
-        node0.generate_blocks(2);
+        mine(node0, 2);
 
         info!("Connect node0 to node1");
         node1.connect(node0);
-        node0.waiting_for_sync(node1, 2);
+        waiting_for_sync(nodes);
         info!("Disconnect node1");
         node0.disconnect(node1);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
 
         info!("Reconnect node0 to node1");
         node0.connect(node1);
-        net.waiting_for_sync(4);
+        waiting_for_sync(nodes);
     }
 
     // workaround to disable node discovery
-    fn modify_ckb_config(&self) -> Box<dyn Fn(&mut CKBAppConfig)> {
-        Box::new(|config| config.network.connect_outbound_interval_secs = 100_000)
+    fn modify_app_config(&self, config: &mut ckb_app_config::CKBAppConfig) {
+        config.network.connect_outbound_interval_secs = 100_000;
     }
 }
 
 pub struct ChainFork2;
 
 impl Spec for ChainFork2 {
-    crate::name!("chain_fork2");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test normal fork switch back
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E
     // node2                 \ -> C -> F -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         info!("Generate 2 blocks (A, B) on node0");
-        node0.generate_blocks(2);
+        mine(node0, 2);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(2);
+        waiting_for_sync(nodes);
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, 3);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
         info!("Reconnect node1");
         node0.connect(node1);
-        node0.waiting_for_sync(node1, 4);
+        waiting_for_sync(&[node0, node1]);
 
         info!("Generate 2 blocks (F, G) on node2");
-        node2.generate_blocks(2);
+        mine(node2, 2);
         info!("Reconnect node2");
         node0.connect(node2);
         node1.connect(node2);
-        net.waiting_for_sync(5);
+        waiting_for_sync(nodes);
     }
 }
 
 pub struct ChainFork3;
 
 impl Spec for ChainFork3 {
-    crate::name!("chain_fork3");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test invalid cellbase reward fork (in block F)
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E -> F
     // node2                 \ -> C -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         info!("Generate DEFAULT_TX_PROPOSAL_WINDOW.1 + 2 blocks (A, B) on node0");
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node0);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(DEFAULT_TX_PROPOSAL_WINDOW.1 + 2);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 3);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
         info!("Generate 1 block (F) with invalid reward cellbase on node1");
         let block = node1.new_block(None, None, None);
         let invalid_block = modify_block_transaction(block, 0, |transaction| {
@@ -163,53 +158,51 @@ impl Spec for ChainFork3 {
 
         info!("Reconnect node1 and node1 should be banned");
         node0.connect_and_wait_ban(node1);
-
-        info!("Generate 1 block (G) on node2");
-        node2.generate_blocks(1);
-        info!("Reconnect node2");
-        node2.connect(node0);
         node2.connect_and_wait_ban(node1);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 4);
+
+        info!("Generate 2 block (G) on node2");
+        info!("Reconnect node2");
+        mine(node2, 2);
+        node2.connect(node0);
+        waiting_for_sync(&[node0, node2]);
     }
 }
 
 pub struct ChainFork4;
 
 impl Spec for ChainFork4 {
-    crate::name!("chain_fork4");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test invalid cellbase capacity overflow fork (in block F)
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
-    // node1                 \ -> D -> E -> F
+    // node1                 \ -> D -> E -> F(F is invalid cellbase capacity overflow)
     // node2                 \ -> C -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         info!("Generate 2 blocks (A, B) on node0");
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node0);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(DEFAULT_TX_PROPOSAL_WINDOW.1 + 2);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 3);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
         info!("Generate 1 block (F) with capacity overflow cellbase on node1");
         let block = node1.new_block(None, None, None);
         let invalid_block = modify_block_transaction(block, 0, |transaction| {
@@ -233,55 +226,53 @@ impl Spec for ChainFork4 {
         info!("Reconnect node1 and node1 should be banned");
         node0.connect_and_wait_ban(node1);
 
-        info!("Generate 1 block (G) on node2");
-        node2.generate_blocks(1);
         info!("Reconnect node2");
         node2.connect(node0);
         node2.connect_and_wait_ban(node1);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 4);
+
+        info!("Generate 1 block (G) on node2");
+        mine(node2, 2);
+        waiting_for_sync(&[node0, node2]);
     }
 }
 
 pub struct ChainFork5;
 
 impl Spec for ChainFork5 {
-    crate::name!("chain_fork5");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test dead cell fork (spent A cellbase in E, and spent A cellbase in F again)
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E -> F
     // node2                 \ -> C -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
-        info!("Generate DEFAULT_TX_PROPOSAL_WINDOW +2 block (A) on node0");
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
         info!("Generate 1 block (B) on node0, proposal spent A cellbase transaction");
-        let transaction = node0.new_transaction_spend_tip_cellbase();
+        let cells = gen_spendable(node0, 1);
+        let transaction = always_success_transaction(node0, &cells[0]);
         node0.submit_transaction(&transaction);
-        node0.generate_blocks(1);
+        mine(node0, 1);
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(DEFAULT_TX_PROPOSAL_WINDOW.1 + 3);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 4);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 1 blocks (D) on node1");
-        node1.generate_blocks(1);
+        mine(node1, 1);
         info!("Generate 1 blocks (E) with transaction on node1");
         let block = {
             let block = node1.new_block(None, None, None);
@@ -305,53 +296,51 @@ impl Spec for ChainFork5 {
 
         info!("Reconnect node1 and node1 should be banned");
         node0.connect_and_wait_ban(node1);
-
-        info!("Generate 1 block (G) on node2");
-        node2.generate_blocks(1);
-        info!("Reconnect node2");
-        node2.connect(node0);
         node2.connect_and_wait_ban(node1);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 5);
+
+        info!("Generate 2 block (G) on node2");
+        info!("Reconnect node2");
+        mine(node2, 2);
+        node2.connect(node0);
+        waiting_for_sync(&[node0, node2]);
     }
 }
 
 pub struct ChainFork6;
 
 impl Spec for ChainFork6 {
-    crate::name!("chain_fork6");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test fork spending the outpoint of a non-existent transaction (in block F)
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E -> F
     // node2                 \ -> C -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         info!("Generate 2 blocks (A, B) on node0");
-        node0.generate_blocks(2);
+        mine(node0, 2);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(2);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, 3);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
         info!("Generate 1 block (F) with spending non-existent transaction on node1");
         let block = node1.new_block(None, None, None);
         let invalid_transaction = node1.new_transaction(h256!("0x1").pack());
@@ -364,53 +353,50 @@ impl Spec for ChainFork6 {
 
         info!("Reconnect node1 and node1 should be banned");
         node0.connect_and_wait_ban(node1);
-
-        info!("Generate 1 block (G) on node2");
-        node2.generate_blocks(1);
-        info!("Reconnect node2");
-        node2.connect(node0);
         node2.connect_and_wait_ban(node1);
-        node0.waiting_for_sync(node2, 4);
+
+        info!("Generate 2 block (G) on node2");
+        mine(node2, 2);
+        node2.connect(node0);
+        waiting_for_sync(&[node0, node2]);
     }
 }
 
 pub struct ChainFork7;
 
 impl Spec for ChainFork7 {
-    crate::name!("chain_fork7");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Test fork spending the outpoint of an invalid index (in block F)
     //                  1    2    3    4    5
     // node0 genesis -> A -> B -> C
     // node1                 \ -> D -> E -> F
     // node2                 \ -> C -> G
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         info!("Generate 12 blocks (A, B) on node0");
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node0);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
-        net.waiting_for_sync(DEFAULT_TX_PROPOSAL_WINDOW.1 + 2);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 1 block (C) on node0");
-        node0.generate_blocks(1);
+        mine(node0, 1);
         node0.connect(node2);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 3);
+        waiting_for_sync(&[node0, node2]);
         info!("Disconnect node2");
         node0.disconnect(node2);
 
         info!("Generate 2 blocks (D, E) on node1");
-        node1.generate_blocks(2);
+        mine(node1, 2);
         info!("Generate 1 block (F) with spending invalid index transaction on node1");
         let block = node1.new_block(None, None, None);
         let transaction = node1.new_transaction_spend_tip_cellbase();
@@ -435,94 +421,91 @@ impl Spec for ChainFork7 {
         info!("Reconnect node1 and node1 should be banned");
         node0.connect_and_wait_ban(node1);
 
-        info!("Generate 1 block (G) on node2");
-        node2.generate_blocks(1);
         info!("Reconnect node2");
-        node2.connect(node0);
         node2.connect_and_wait_ban(node1);
-        node0.waiting_for_sync(node2, DEFAULT_TX_PROPOSAL_WINDOW.1 + 4);
+
+        info!("Generate 1 block (G) on node2");
+        node2.connect(node0);
+        mine(node2, 2);
+        waiting_for_sync(&[node0, node2]);
     }
 }
 
 pub struct LongForks;
 
 impl Spec for LongForks {
-    crate::name!("long_forks");
-
-    crate::setup!(num_nodes: 3, connect_all: false);
+    crate::setup!(num_nodes: 3);
 
     // Case: Two nodes has different long forks should be able to convergence
     // based on sync mechanism
-    fn run(&self, net: &mut Net) {
-        const PER_FETCH_BLOCK_LIMIT: usize = 128;
+    fn run(&self, nodes: &mut Vec<Node>) {
+        const PER_FETCH_BLOCK_LIMIT: u64 = 128;
 
-        net.exit_ibd_mode();
-        let test_node = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+        out_ibd_mode(nodes);
+        let test_node = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
 
         // test_node == node1 == chain1, height = 139 = PER_FETCH_BLOCK_LIMIT + 10 + 1
-        node1.generate_blocks(PER_FETCH_BLOCK_LIMIT + 10);
+        mine(node1, PER_FETCH_BLOCK_LIMIT + 10);
         test_node.connect(node1);
-        test_node.waiting_for_sync(node1, PER_FETCH_BLOCK_LIMIT as u64 + 10 + 1);
+        waiting_for_sync(&[test_node, node1]);
         test_node.disconnect(node1);
 
         // test_node == node2 == chain2, height = 149 = PER_FETCH_BLOCK_LIMIT + 20 + 1
-        node2.generate_blocks(PER_FETCH_BLOCK_LIMIT + 20);
+        mine(node2, PER_FETCH_BLOCK_LIMIT + 20);
         test_node.connect(node2);
-        test_node.waiting_for_sync(node2, PER_FETCH_BLOCK_LIMIT as u64 + 20 + 1);
+        waiting_for_sync(&[test_node, node2]);
         test_node.disconnect(node2);
 
         // test_node == node1 == chain1, height = 169 = PER_FETCH_BLOCK_LIMIT + 10 + 30 + 1
-        node1.generate_blocks(30);
+        mine(node1, 30);
         test_node.connect(node1);
-        test_node.waiting_for_sync(node1, PER_FETCH_BLOCK_LIMIT as u64 + 10 + 30 + 1);
+        waiting_for_sync(&[test_node, node1]);
     }
 }
 
 pub struct ForksContainSameTransactions;
 
 impl Spec for ForksContainSameTransactions {
-    crate::name!("forks_contain_same_transactions");
-
-    crate::setup!(num_nodes: 4, connect_all: false);
+    crate::setup!(num_nodes: 4);
 
     // Case:
     //   1. 3 forks `chain0`, `chain1` and `chain2`
     //   2. `chain0` and `chain1` both contain transaction `tx`, but `chain2` not
     //   3. Initialize node holds `chain0` as the main chain, then switch to `chain2`, finally to
     //      `chain1`. We expect `get_transaction(tx)` returns successfully.
-    fn run(&self, net: &mut Net) {
-        net.exit_ibd_mode();
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
-        let target_node = &net.nodes[3];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        out_ibd_mode(nodes);
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
+        let target_node = &nodes[3];
 
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node0);
 
         let transaction = node0.new_transaction_spend_tip_cellbase();
 
         // Build `chain0`, contain the target `transaction`, with length = 41
         {
-            node0.generate_blocks(20);
+            mine(node0, 20);
             node0.submit_transaction(&transaction);
-            node0.generate_blocks(20);
+            mine(node0, 20);
         }
 
         // Build `chain1`, contain the target `transaction`, with length = 61
         {
             // `sleep` to make sure that the chain1[2] != chain2[2]
             sleep(Duration::from_millis(1));
-            node1.generate_blocks(30);
+            mine(node1, 30);
             node1.submit_transaction(&transaction);
-            node1.generate_blocks(40);
+            mine(node1, 40);
         }
 
         // Build `chain2`, all the blocks are empty, with length = 51
         {
             sleep(Duration::from_millis(1));
-            node2.generate_blocks(60);
+            mine(node2, 60);
         }
 
         let (rpc_client0, rpc_client1, rpc_client2) =
@@ -537,34 +520,28 @@ impl Spec for ForksContainSameTransactions {
 
         // `target_node` holds `chain0` as the main chain
         target_node.connect(node0);
-        target_node.waiting_for_sync(node0, DEFAULT_TX_PROPOSAL_WINDOW.1 + 43);
+        waiting_for_sync(&[target_node, node0]);
         target_node.disconnect(node0);
-        is_transaction_existed(target_node, transaction.hash());
+        is_transaction_committed(target_node, &transaction);
 
         // `target_node` switch to `chain2` as the main chain
         target_node.connect(node2);
-        target_node.waiting_for_sync(node2, 61);
+        waiting_for_sync(&[target_node, node2]);
         target_node.disconnect(node2);
-        is_transaction_existed(target_node, transaction.hash());
+        is_transaction_committed(target_node, &transaction);
 
         // `target_node` switch to `chain1` as the main chain
         target_node.connect(node1);
-        target_node.waiting_for_sync(node1, 71);
+        waiting_for_sync(&[target_node, node1]);
         target_node.disconnect(node1);
-        is_transaction_existed(target_node, transaction.hash());
+        is_transaction_committed(target_node, &transaction);
     }
 }
 
 pub struct ForksContainSameUncle;
 
 impl Spec for ForksContainSameUncle {
-    crate::name!("forks_contain_same_uncle");
-
-    crate::setup!(
-         num_nodes: 2,
-         connect_all: false,
-         protocols: vec![TestProtocol::sync()],
-    );
+    crate::setup!(num_nodes: 2);
 
     // Case: Two nodes maintain two different forks, but contains a same uncle block, should be
     //       able to sync with each other.
@@ -578,15 +555,15 @@ impl Spec for ForksContainSameUncle {
     //             \       \-> B(U)
     //              \-> U
     //
-    fn run(&self, net: &mut Net) {
-        let node_a = &net.nodes[0];
-        let node_b = &net.nodes[1];
-        net.exit_ibd_mode();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node_a = &nodes[0];
+        let node_b = &nodes[1];
+        out_ibd_mode(nodes);
 
         info!("(1) Construct an uncle before fork point");
         let uncle = node_a.construct_uncle();
-        node_a.generate_block();
-        node_b.generate_block();
+        mine(&node_a, 1);
+        mine(&node_b, 1);
 
         info!("(2) Add `uncle` into different forks in node_a and node_b");
         node_a.submit_block(&uncle);
@@ -604,25 +581,23 @@ impl Spec for ForksContainSameUncle {
         node_b.submit_block(&block_b);
 
         info!("(3) Make node_b's fork longer(to help check whether is synchronized)");
-        node_b.generate_block();
+        mine(&node_b, 1);
 
         info!("(4) Connect node_a and node_b, expect that they sync into convergence");
         node_a.connect(node_b);
-        net.waiting_for_sync(node_b.get_tip_block_number());
+        waiting_for_sync(nodes);
     }
 }
 
 pub struct ForkedTransaction;
 
 impl Spec for ForkedTransaction {
-    crate::name!("forked_transaction");
-
-    crate::setup!(num_nodes: 2, connect_all: false);
+    crate::setup!(num_nodes: 2);
 
     // Case: Check TxStatus of transaction on main-fork, verified-fork and unverified-fork
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
         let finalization_delay_length = node0.consensus().finalization_delay_length();
         (0..=finalization_delay_length).for_each(|_| {
             let block = node0.new_block(None, None, None);
@@ -630,13 +605,13 @@ impl Spec for ForkedTransaction {
             node1.submit_block(&block);
         });
 
-        net.exit_ibd_mode();
+        out_ibd_mode(nodes);
         let fixed_point = node0.get_tip_block_number();
         let tx = node1.new_transaction_spend_tip_cellbase();
 
         // `node0` doesn't have `tx`      => TxStatus: None
         {
-            node0.generate_blocks(1 + 2 * finalization_delay_length as usize);
+            mine(node0, 1 + 2 * finalization_delay_length);
             let tx_status = node0.rpc_client().get_transaction(tx.hash());
             assert!(tx_status.is_none(), "node0 maintains tx in unverified fork");
         }
@@ -644,9 +619,8 @@ impl Spec for ForkedTransaction {
         // `node1` have `tx` on main-fork => TxStatus: Some(Committed)
         {
             node1.submit_transaction(&tx);
-            node1.generate_blocks(2 * finalization_delay_length as usize);
-            let tx_status = node1.rpc_client().get_transaction(tx.hash()).unwrap();
-            is_committed(&tx_status);
+            mine(node1, 2 * finalization_delay_length);
+            assert!(is_transaction_committed(node1, &tx));
         }
 
         // `node0` have `tx` on unverified-fork only => TxStatus: None
@@ -673,15 +647,7 @@ impl Spec for ForkedTransaction {
                 node1.submit_block(&block);
             });
 
-            let is_pending = |tx_status: &TransactionWithStatus| {
-                let pending_status = TxStatus::pending();
-                tx_status.tx_status.status == pending_status.status
-            };
-            let tx_status = node1.rpc_client().get_transaction(tx.hash()).unwrap();
-            assert!(
-                is_pending(&tx_status),
-                "node1 maintains tx in verified fork."
-            );
+            assert!(is_transaction_pending(node1, &tx,));
         }
     }
 }
@@ -700,12 +666,4 @@ where
         .as_advanced_builder()
         .set_transactions(transactions)
         .build()
-}
-
-fn is_transaction_existed(node: &Node, tx_hash: Byte32) {
-    let tx_status = node
-        .rpc_client()
-        .get_transaction(tx_hash)
-        .expect("node should contains transaction");
-    is_committed(&tx_status);
 }

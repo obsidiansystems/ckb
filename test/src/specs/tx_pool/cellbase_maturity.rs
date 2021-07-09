@@ -1,21 +1,20 @@
+use crate::util::mining::{mine, mine_until_out_bootstrap_period};
 use crate::utils::assert_send_transaction_fail;
-use crate::{Net, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
-use ckb_chain_spec::ChainSpec;
+use crate::{Node, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
+
+use ckb_logger::info;
 use ckb_types::core::BlockNumber;
-use log::info;
 
 const MATURITY: BlockNumber = 5;
 
 pub struct CellbaseMaturity;
 
 impl Spec for CellbaseMaturity {
-    crate::name!("cellbase_maturity");
-
-    fn run(&self, net: &mut Net) {
-        let node = &net.nodes[0];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes[0];
 
         info!("Generate DEFAULT_TX_PROPOSAL_WINDOW.1 + 2 block");
-        node.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node);
 
         info!("Use generated block's cellbase as tx input");
         let tip_block = node.get_tip_block();
@@ -24,7 +23,7 @@ impl Spec for CellbaseMaturity {
         (0..MATURITY - DEFAULT_TX_PROPOSAL_WINDOW.0).for_each(|i| {
             info!("Tx is not maturity in N + {} block", i);
             assert_send_transaction_fail(node, &tx, "CellbaseImmaturity");
-            node.generate_block();
+            mine(&node, 1);
         });
 
         info!(
@@ -39,18 +38,13 @@ impl Spec for CellbaseMaturity {
             "Tx will be added to proposed pool in N + {} block",
             MATURITY
         );
-        (0..DEFAULT_TX_PROPOSAL_WINDOW.0).for_each(|_| {
-            node.generate_block();
-        });
-
+        mine(&node, DEFAULT_TX_PROPOSAL_WINDOW.0);
         node.assert_tx_pool_size(0, 1);
-        node.generate_block();
+        mine(&node, 1);
         node.assert_tx_pool_size(0, 0);
     }
 
-    fn modify_chain_spec(&self) -> Box<dyn Fn(&mut ChainSpec)> {
-        Box::new(|spec_config| {
-            spec_config.params.cellbase_maturity = MATURITY;
-        })
+    fn modify_chain_spec(&self, spec: &mut ckb_chain_spec::ChainSpec) {
+        spec.params.cellbase_maturity = Some(MATURITY);
     }
 }

@@ -1,16 +1,17 @@
 use crate::cache::StoreCache;
 use crate::store::ChainStore;
-use crate::{
-    COLUMN_BLOCK_BODY, COLUMN_BLOCK_EPOCH, COLUMN_BLOCK_EXT, COLUMN_BLOCK_HEADER,
-    COLUMN_BLOCK_PROPOSAL_IDS, COLUMN_BLOCK_UNCLE, COLUMN_CELL_SET, COLUMN_EPOCH, COLUMN_INDEX,
-    COLUMN_META, COLUMN_TRANSACTION_INFO, COLUMN_UNCLES, META_CURRENT_EPOCH_KEY,
-    META_TIP_HEADER_KEY,
-};
 use ckb_db::{
     iter::{DBIter, DBIterator, IteratorMode},
-    Col, DBVector, RocksDBTransaction, RocksDBTransactionSnapshot,
+    DBVector, RocksDBTransaction, RocksDBTransactionSnapshot,
+};
+use ckb_db_schema::{
+    Col, COLUMN_BLOCK_BODY, COLUMN_BLOCK_EPOCH, COLUMN_BLOCK_EXT, COLUMN_BLOCK_HEADER,
+    COLUMN_BLOCK_PROPOSAL_IDS, COLUMN_BLOCK_UNCLE, COLUMN_CELL, COLUMN_CELL_DATA,
+    COLUMN_CELL_DATA_HASH, COLUMN_EPOCH, COLUMN_INDEX, COLUMN_META, COLUMN_NUMBER_HASH,
+    COLUMN_TRANSACTION_INFO, COLUMN_UNCLES, META_CURRENT_EPOCH_KEY, META_TIP_HEADER_KEY,
 };
 use ckb_error::Error;
+use ckb_freezer::Freezer;
 use ckb_types::{
     core::{BlockExt, BlockView, EpochExt, HeaderView},
     packed,
@@ -18,8 +19,10 @@ use ckb_types::{
 };
 use std::sync::Arc;
 
+/// TODO(doc): @quake
 pub struct StoreTransaction {
     pub(crate) inner: RocksDBTransaction,
+    pub(crate) freezer: Option<Freezer>,
     pub(crate) cache: Arc<StoreCache>,
 }
 
@@ -28,6 +31,10 @@ impl<'a> ChainStore<'a> for StoreTransaction {
 
     fn cache(&'a self) -> Option<&'a StoreCache> {
         Some(&self.cache)
+    }
+
+    fn freezer(&'a self) -> Option<&'a Freezer> {
+        self.freezer.as_ref()
     }
 
     fn get(&self, col: Col, key: &[u8]) -> Option<Self::Vector> {
@@ -43,6 +50,7 @@ impl<'a> ChainStore<'a> for StoreTransaction {
 
 pub struct StoreTransactionSnapshot<'a> {
     pub(crate) inner: RocksDBTransactionSnapshot<'a>,
+    pub(crate) freezer: Option<Freezer>,
     pub(crate) cache: Arc<StoreCache>,
 }
 
@@ -51,6 +59,10 @@ impl<'a> ChainStore<'a> for StoreTransactionSnapshot<'a> {
 
     fn cache(&'a self) -> Option<&'a StoreCache> {
         Some(&self.cache)
+    }
+
+    fn freezer(&'a self) -> Option<&'a Freezer> {
+        self.freezer.as_ref()
     }
 
     fn get(&self, col: Col, key: &[u8]) -> Option<Self::Vector> {
@@ -65,25 +77,31 @@ impl<'a> ChainStore<'a> for StoreTransactionSnapshot<'a> {
 }
 
 impl StoreTransaction {
+    /// TODO(doc): @quake
     pub fn insert_raw(&self, col: Col, key: &[u8], value: &[u8]) -> Result<(), Error> {
         self.inner.put(col, key, value)
     }
 
+    /// TODO(doc): @quake
     pub fn delete(&self, col: Col, key: &[u8]) -> Result<(), Error> {
         self.inner.delete(col, key)
     }
 
+    /// TODO(doc): @quake
     pub fn commit(&self) -> Result<(), Error> {
         self.inner.commit()
     }
 
+    /// TODO(doc): @quake
     pub fn get_snapshot(&self) -> StoreTransactionSnapshot<'_> {
         StoreTransactionSnapshot {
             inner: self.inner.get_snapshot(),
+            freezer: self.freezer.clone(),
             cache: Arc::clone(&self.cache),
         }
     }
 
+    /// TODO(doc): @quake
     pub fn get_update_for_tip_hash(
         &self,
         snapshot: &StoreTransactionSnapshot<'_>,
@@ -94,17 +112,29 @@ impl StoreTransaction {
             .map(|slice| packed::Byte32Reader::from_slice_should_be_ok(&slice.as_ref()).to_entity())
     }
 
+    /// TODO(doc): @quake
     pub fn insert_tip_header(&self, h: &HeaderView) -> Result<(), Error> {
         self.insert_raw(COLUMN_META, META_TIP_HEADER_KEY, h.hash().as_slice())
     }
 
+    /// TODO(doc): @quake
     pub fn insert_block(&self, block: &BlockView) -> Result<(), Error> {
         let hash = block.hash();
         let header = block.header().pack();
         let uncles = block.uncles().pack();
         let proposals = block.data().proposals();
+        let txs_len: packed::Uint32 = (block.transactions().len() as u32).pack();
         self.insert_raw(COLUMN_BLOCK_HEADER, hash.as_slice(), header.as_slice())?;
         self.insert_raw(COLUMN_BLOCK_UNCLE, hash.as_slice(), uncles.as_slice())?;
+        self.insert_raw(
+            COLUMN_NUMBER_HASH,
+            packed::NumberHash::new_builder()
+                .number(block.number().pack())
+                .block_hash(hash.clone())
+                .build()
+                .as_slice(),
+            txs_len.as_slice(),
+        )?;
         self.insert_raw(
             COLUMN_BLOCK_PROPOSAL_IDS,
             hash.as_slice(),
@@ -121,10 +151,21 @@ impl StoreTransaction {
         Ok(())
     }
 
-    pub fn delete_block(&self, hash: &packed::Byte32, txs_len: usize) -> Result<(), Error> {
+    /// TODO(doc): @quake
+    pub fn delete_block(&self, block: &BlockView) -> Result<(), Error> {
+        let hash = block.hash();
+        let txs_len = block.transactions().len();
         self.delete(COLUMN_BLOCK_HEADER, hash.as_slice())?;
         self.delete(COLUMN_BLOCK_UNCLE, hash.as_slice())?;
         self.delete(COLUMN_BLOCK_PROPOSAL_IDS, hash.as_slice())?;
+        self.delete(
+            COLUMN_NUMBER_HASH,
+            packed::NumberHash::new_builder()
+                .number(block.number().pack())
+                .block_hash(hash.clone())
+                .build()
+                .as_slice(),
+        )?;
         // currently rocksdb transaction do not support `DeleteRange`
         // https://github.com/facebook/rocksdb/issues/4812
         for index in 0..txs_len {
@@ -137,6 +178,7 @@ impl StoreTransaction {
         Ok(())
     }
 
+    /// TODO(doc): @quake
     pub fn insert_block_ext(
         &self,
         block_hash: &packed::Byte32,
@@ -149,6 +191,7 @@ impl StoreTransaction {
         )
     }
 
+    /// TODO(doc): @quake
     pub fn attach_block(&self, block: &BlockView) -> Result<(), Error> {
         let header = block.data().header();
         let block_hash = block.hash();
@@ -176,6 +219,7 @@ impl StoreTransaction {
         self.insert_raw(COLUMN_INDEX, block_hash.as_slice(), block_number.as_slice())
     }
 
+    /// TODO(doc): @quake
     pub fn detach_block(&self, block: &BlockView) -> Result<(), Error> {
         for tx_hash in block.tx_hashes().iter() {
             self.delete(COLUMN_TRANSACTION_INFO, tx_hash.as_slice())?;
@@ -188,6 +232,7 @@ impl StoreTransaction {
         self.delete(COLUMN_INDEX, block.hash().as_slice())
     }
 
+    /// TODO(doc): @quake
     pub fn insert_block_epoch_index(
         &self,
         block_hash: &packed::Byte32,
@@ -200,25 +245,58 @@ impl StoreTransaction {
         )
     }
 
+    /// TODO(doc): @quake
     pub fn insert_epoch_ext(&self, hash: &packed::Byte32, epoch: &EpochExt) -> Result<(), Error> {
         self.insert_raw(COLUMN_EPOCH, hash.as_slice(), epoch.pack().as_slice())?;
         let epoch_number: packed::Uint64 = epoch.number().pack();
         self.insert_raw(COLUMN_EPOCH, epoch_number.as_slice(), hash.as_slice())
     }
 
+    /// TODO(doc): @quake
     pub fn insert_current_epoch_ext(&self, epoch: &EpochExt) -> Result<(), Error> {
         self.insert_raw(COLUMN_META, META_CURRENT_EPOCH_KEY, epoch.pack().as_slice())
     }
 
-    pub fn update_cell_set(
+    /// TODO(doc): @quake
+    pub fn insert_cells(
         &self,
-        tx_hash: &packed::Byte32,
-        meta: &packed::TransactionMeta,
+        cells: impl Iterator<
+            Item = (
+                packed::OutPoint,
+                packed::CellEntry,
+                Option<packed::CellDataEntry>,
+            ),
+        >,
     ) -> Result<(), Error> {
-        self.insert_raw(COLUMN_CELL_SET, tx_hash.as_slice(), meta.as_slice())
+        for (out_point, cell, cell_data) in cells {
+            let key = out_point.to_cell_key();
+            self.insert_raw(COLUMN_CELL, &key, cell.as_slice())?;
+            if let Some(data) = cell_data {
+                self.insert_raw(COLUMN_CELL_DATA, &key, data.as_slice())?;
+                self.insert_raw(
+                    COLUMN_CELL_DATA_HASH,
+                    &key,
+                    data.output_data_hash().as_slice(),
+                )?;
+            } else {
+                self.insert_raw(COLUMN_CELL_DATA, &key, &[])?;
+                self.insert_raw(COLUMN_CELL_DATA_HASH, &key, &[])?;
+            }
+        }
+        Ok(())
     }
 
-    pub fn delete_cell_set(&self, tx_hash: &packed::Byte32) -> Result<(), Error> {
-        self.delete(COLUMN_CELL_SET, tx_hash.as_slice())
+    /// TODO(doc): @quake
+    pub fn delete_cells(
+        &self,
+        out_points: impl Iterator<Item = packed::OutPoint>,
+    ) -> Result<(), Error> {
+        for out_point in out_points {
+            let key = out_point.to_cell_key();
+            self.delete(COLUMN_CELL, &key)?;
+            self.delete(COLUMN_CELL_DATA, &key)?;
+            self.delete(COLUMN_CELL_DATA_HASH, &key)?;
+        }
+        Ok(())
     }
 }

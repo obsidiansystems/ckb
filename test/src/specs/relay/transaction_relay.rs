@@ -1,145 +1,77 @@
+use crate::node::{connect_all, waiting_for_sync};
+use crate::util::cell::gen_spendable;
+use crate::util::mining::{mine, out_ibd_mode};
+use crate::util::transaction::{always_success_transaction, always_success_transactions};
 use crate::utils::{build_relay_tx_hashes, build_relay_txs, sleep, wait_until};
-use crate::{Net, Spec, TestProtocol, DEFAULT_TX_PROPOSAL_WINDOW};
+use crate::{Net, Node, Spec};
+use ckb_constant::sync::RETRY_ASK_TX_TIMEOUT_INCREASE;
+use ckb_logger::info;
 use ckb_network::SupportProtocols;
-use ckb_sync::RETRY_ASK_TX_TIMEOUT_INCREASE;
 use ckb_types::{
-    core::{Capacity, TransactionBuilder},
-    packed::{CellInput, GetRelayTransactions, OutPoint, RelayMessage},
+    core::TransactionBuilder,
+    packed::{GetRelayTransactions, RelayMessage},
     prelude::*,
 };
-use log::info;
-use std::time::Duration;
 
 pub struct TransactionRelayBasic;
 
 impl Spec for TransactionRelayBasic {
-    crate::name!("transaction_relay_basic");
-
     crate::setup!(num_nodes: 3);
 
-    fn run(&self, net: &mut Net) {
-        net.exit_ibd_mode();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        out_ibd_mode(nodes);
+        connect_all(nodes);
 
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
+        let node1 = &nodes[1];
+        let cells = gen_spendable(node1, 1);
+        let transaction = always_success_transaction(node1, &cells[0]);
+        let hash = node1.submit_transaction(&transaction);
 
-        info!("Generate new transaction on node1");
-        node1.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
-        let hash = node1.generate_transaction();
-
-        info!("Waiting for relay");
-        let rpc_client = node0.rpc_client();
-        let ret = wait_until(10, || {
-            if let Some(transaction) = rpc_client.get_transaction(hash.clone()) {
-                transaction.tx_status.block_hash.is_none()
-            } else {
-                false
-            }
+        let relayed = wait_until(10, || {
+            nodes
+                .iter()
+                .all(|node| node.rpc_client().get_transaction(hash.clone()).is_some())
         });
-        assert!(ret, "Transaction should be relayed to node0");
-
-        let rpc_client = node2.rpc_client();
-        let ret = wait_until(10, || {
-            if let Some(transaction) = rpc_client.get_transaction(hash.clone()) {
-                transaction.tx_status.block_hash.is_none()
-            } else {
-                false
-            }
-        });
-        assert!(ret, "Transaction should be relayed to node2");
+        assert!(
+            relayed,
+            "Transaction should be relayed from node0 to others"
+        );
     }
 }
-
-const MIN_CAPACITY: u64 = 61_0000_0000;
 
 pub struct TransactionRelayMultiple;
 
 impl Spec for TransactionRelayMultiple {
-    crate::name!("transaction_relay_multiple");
-
     crate::setup!(num_nodes: 5);
 
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        (0..node0.consensus().tx_proposal_window().farthest() + 2).for_each(|_| {
-            net.exit_ibd_mode();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        connect_all(nodes);
+
+        let node0 = &nodes[0];
+        let cells = gen_spendable(node0, 10);
+        let transactions = always_success_transactions(node0, &cells);
+        transactions.iter().for_each(|tx| {
+            node0.submit_transaction(tx);
         });
 
-        info!("Use generated block's cellbase as tx input");
-        let block = node0.get_tip_block();
-        let reward: Capacity = block.transactions()[0]
-            .outputs()
-            .as_reader()
-            .get(0)
-            .unwrap()
-            .to_entity()
-            .capacity()
-            .unpack();
-        let txs_num = reward.as_u64() / MIN_CAPACITY;
+        let relayed = wait_until(20, || {
+            nodes.iter().all(|node| {
+                transactions
+                    .iter()
+                    .all(|tx| node.rpc_client().get_transaction(tx.hash()).is_some())
+            })
+        });
+        assert!(relayed, "all transactions should be relayed");
 
-        let parent_hash = block.transactions()[0].hash();
-        let temp_transaction = node0.new_transaction(parent_hash);
-        let output = temp_transaction
-            .outputs()
-            .as_reader()
-            .get(0)
-            .unwrap()
-            .to_entity()
-            .as_builder()
-            .capacity(Capacity::shannons(reward.as_u64() / txs_num).pack())
-            .build();
-        let mut tb = temp_transaction
-            .as_advanced_builder()
-            .set_outputs(Vec::new())
-            .set_outputs_data(Vec::new());
-        for _ in 0..txs_num {
-            tb = tb.output(output.clone()).output_data(Default::default());
-        }
-        let transaction = tb.build();
-        node0
-            .rpc_client()
-            .send_transaction(transaction.data().into());
-        node0.generate_block();
-        node0.generate_block();
-        node0.generate_block();
-        net.waiting_for_sync(node0.get_tip_block_number());
-
-        info!("Send multiple transactions to node0");
-        let tx_hash = transaction.hash();
-        transaction
-            .outputs()
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, output)| {
-                let tx = TransactionBuilder::default()
-                    .cell_dep(
-                        transaction
-                            .cell_deps()
-                            .as_reader()
-                            .get(0)
-                            .unwrap()
-                            .to_entity(),
-                    )
-                    .output(output)
-                    .input(CellInput::new(OutPoint::new(tx_hash.clone(), i as u32), 0))
-                    .output_data(Default::default())
-                    .build();
-                node0.rpc_client().send_transaction(tx.data().into());
-            });
-
-        node0.generate_block();
-        node0.generate_block();
-        node0.generate_block();
-        net.waiting_for_sync(node0.get_tip_block_number());
-
-        info!("All transactions should be relayed and mined");
-        node0.assert_tx_pool_size(0, 0);
-
-        net.nodes.iter().for_each(|node| {
+        mine(&node0, 1);
+        mine(&node0, 1);
+        mine(&node0, 1);
+        waiting_for_sync(nodes);
+        nodes.iter().for_each(|node| {
+            node.assert_tx_pool_size(0, 0);
             assert_eq!(
-                node.get_tip_block().transactions().len() as u64,
-                txs_num + 1
+                node.get_tip_block().transactions().len(),
+                transactions.len() + 1
             )
         });
     }
@@ -148,29 +80,25 @@ impl Spec for TransactionRelayMultiple {
 pub struct TransactionRelayTimeout;
 
 impl Spec for TransactionRelayTimeout {
-    crate::name!("get_relay_transaction_timeout");
-
-    crate::setup!(
-        connect_all: false,
-        num_nodes: 1,
-        protocols: vec![TestProtocol::relay(), TestProtocol::sync()],
-    );
-
-    fn run(&self, net: &mut Net) {
-        let node = net.nodes.pop().unwrap();
-        node.generate_blocks(4);
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = nodes.pop().unwrap();
+        mine(&node, 4);
+        let mut net = Net::new(
+            self.name(),
+            node.consensus(),
+            vec![SupportProtocols::Sync, SupportProtocols::Relay],
+        );
         net.connect(&node);
-        let (pi, _, _) = net.receive();
         let dummy_tx = TransactionBuilder::default().build();
         info!("Sending RelayTransactionHashes to node");
         net.send(
-            SupportProtocols::Relay.protocol_id(),
-            pi,
+            &node,
+            SupportProtocols::Relay,
             build_relay_tx_hashes(&[dummy_tx.hash()]),
         );
         info!("Receiving GetRelayTransactions message from node");
         assert!(
-            wait_get_relay_txs(&net),
+            wait_get_relay_txs(&net, &node),
             "timeout to wait GetRelayTransactions"
         );
 
@@ -180,7 +108,7 @@ impl Spec for TransactionRelayTimeout {
         // (not happened in current test case)
         sleep(wait_seconds);
         assert!(
-            !wait_get_relay_txs(&net),
+            !wait_get_relay_txs(&net, &node),
             "should not receive GetRelayTransactions again"
         );
     }
@@ -189,30 +117,25 @@ impl Spec for TransactionRelayTimeout {
 pub struct RelayInvalidTransaction;
 
 impl Spec for RelayInvalidTransaction {
-    crate::name!("relay_invalid_transaction");
-
-    crate::setup!(
-        connect_all: false,
-        num_nodes: 1,
-        protocols: vec![TestProtocol::relay(), TestProtocol::sync()],
-        retry_failed: 1,
-    );
-
-    fn run(&self, net: &mut Net) {
-        let node = net.nodes.pop().unwrap();
-        node.generate_blocks(4);
-        net.connect(&node);
-        let (pi, _, _) = net.receive();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node = &nodes.pop().unwrap();
+        mine(&node, 4);
+        let mut net = Net::new(
+            self.name(),
+            node.consensus(),
+            vec![SupportProtocols::Sync, SupportProtocols::Relay],
+        );
+        net.connect(node);
         let dummy_tx = TransactionBuilder::default().build();
         info!("Sending RelayTransactionHashes to node");
         net.send(
-            SupportProtocols::Relay.protocol_id(),
-            pi,
+            node,
+            SupportProtocols::Relay,
             build_relay_tx_hashes(&[dummy_tx.hash()]),
         );
         info!("Receiving GetRelayTransactions message from node");
         assert!(
-            wait_get_relay_txs(&net),
+            wait_get_relay_txs(&net, node),
             "timeout to wait GetRelayTransactions"
         );
 
@@ -222,8 +145,8 @@ impl Spec for RelayInvalidTransaction {
         );
         info!("Sending RelayTransactions to node");
         net.send(
-            SupportProtocols::Relay.protocol_id(),
-            pi,
+            &node,
+            SupportProtocols::Relay,
             build_relay_txs(&[(dummy_tx, 333)]),
         );
 
@@ -238,46 +161,44 @@ impl Spec for RelayInvalidTransaction {
     }
 }
 
-fn wait_get_relay_txs(net: &Net) -> bool {
-    wait_until(10, || {
-        if let Ok((_, _, data)) = net.receive_timeout(Duration::from_secs(10)) {
-            if let Ok(message) = RelayMessage::from_slice(&data) {
-                return message.to_enum().item_name() == GetRelayTransactions::NAME;
-            }
-        }
-        false
+fn wait_get_relay_txs(net: &Net, node: &Node) -> bool {
+    net.should_receive(node, |data| {
+        RelayMessage::from_slice(data)
+            .map(|message| message.to_enum().item_name() == GetRelayTransactions::NAME)
+            .unwrap_or(false)
     })
 }
 
 pub struct TransactionRelayEmptyPeers;
 
 impl Spec for TransactionRelayEmptyPeers {
-    crate::name!("transaction_relay_empty_peers");
-
     crate::setup!(num_nodes: 2);
 
-    fn run(&self, net: &mut Net) {
-        net.exit_ibd_mode();
+    fn run(&self, nodes: &mut Vec<Node>) {
+        out_ibd_mode(nodes);
 
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
 
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
-        node0.waiting_for_sync(node1, DEFAULT_TX_PROPOSAL_WINDOW.1 + 3);
-        info!("Disconnect node1 and generate new transaction on node0");
-        node0.disconnect(&node1);
-        let hash = node0.generate_transaction();
+        let cells = gen_spendable(node0, 1);
+        let transaction = always_success_transaction(node1, &cells[0]);
+
+        // Connect to node1 and then disconnect
+        node0.connect(node1);
+        waiting_for_sync(&[node0, node1]);
+        node0.disconnect(node1);
+
+        // Submit transaction. Node0 has empty peers at present.
+        node0.submit_transaction(&transaction);
 
         info!("Transaction should be relayed to node1 when node0's peers become none-empty");
         node0.connect(node1);
-        let rpc_client = node1.rpc_client();
-        let ret = wait_until(10, || {
-            if let Some(transaction) = rpc_client.get_transaction(hash.clone()) {
-                transaction.tx_status.block_hash.is_none()
-            } else {
-                false
-            }
+        let relayed = wait_until(10, || {
+            node1
+                .rpc_client()
+                .get_transaction(transaction.hash())
+                .is_some()
         });
-        assert!(ret, "Transaction should be relayed to node1");
+        assert!(relayed, "Transaction should be relayed to node1");
     }
 }

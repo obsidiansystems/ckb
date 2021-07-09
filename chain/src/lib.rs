@@ -1,11 +1,11 @@
-//! # The Chain Library
+//! CKB chain service.
 //!
-//! This Library contains the `Chain Service` implement:
+//! [ChainService] background base on database, handle block importing,
+//! the [ChainController] is responsible for receive the request and returning response
 //!
-//! - [Chain](chain::chain::Chain) represent a struct which
+//! [ChainService](chain/struct.ChainService.html)
+//! [ChainController](chain/struct.ChainController.html)
 
-mod cell;
 pub mod chain;
-pub mod switch;
 #[cfg(test)]
 mod tests;

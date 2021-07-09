@@ -1,23 +1,42 @@
-use crate::{Error, ErrorKind};
-use failure::{err_msg, Backtrace, Context, Fail};
-use std::fmt::{self, Debug, Display};
+use crate::{
+    def_error_base_on_kind, impl_error_conversion_with_adaptor, impl_error_conversion_with_kind,
+};
+use derive_more::Display;
+use std::fmt;
+use thiserror::Error;
 
-#[derive(Debug)]
-pub struct InternalError {
-    kind: Context<InternalErrorKind>,
-}
+/// An error with no reason.
+#[derive(Error, Debug, Clone, Copy)]
+#[error("no reason is provided")]
+pub struct SilentError;
 
-#[derive(Debug, PartialEq, Eq, Clone, Display)]
+/// An error with only a string as the reason.
+#[derive(Error, Debug, Clone)]
+#[error("{0}")]
+pub struct OtherError(String);
+
+/// A list specifying categories of ckb internal error.
+///
+/// This list is intended to grow over time and it is not recommended to exhaustively match against it.
+///
+/// It is used with the [`InternalError`].
+///
+/// [`InternalError`]: ../ckb_error/struct.InternalError.html
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Display)]
 pub enum InternalErrorKind {
-    /// An arithmetic overflow occurs during capacity calculation,
-    /// e.g. `Capacity::safe_add`
+    /// An arithmetic overflow occurs during capacity calculation, e.g. `Capacity::safe_add`
     CapacityOverflow,
 
     /// Persistent data had corrupted
     DataCorrupted,
 
-    /// Database exception
+    /// Error occurs during database operations
     Database,
+
+    /// It indicates that the underlying error is [`BlockAssemblerError`]
+    ///
+    /// [`BlockAssemblerError`]: ../ckb_tx_pool/error/enum.BlockAssemblerError.html
+    BlockAssembler,
 
     /// VM internal error
     VM,
@@ -27,64 +46,24 @@ pub enum InternalErrorKind {
 
     /// The feature is disabled or is conflicted with the configuration
     Config,
+
+    /// Other system error
+    Other,
 }
 
-impl fmt::Display for InternalError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(cause) = self.cause() {
-            write!(f, "{}({})", self.kind(), cause)
-        } else {
-            write!(f, "{}", self.kind())
-        }
-    }
-}
+def_error_base_on_kind!(InternalError, InternalErrorKind, "Internal error.");
 
-impl From<InternalError> for Error {
-    fn from(error: InternalError) -> Self {
-        error.context(ErrorKind::Internal).into()
-    }
-}
+impl_error_conversion_with_kind!(InternalError, crate::ErrorKind::Internal, crate::Error);
 
-impl From<InternalErrorKind> for InternalError {
-    fn from(kind: InternalErrorKind) -> Self {
-        InternalError {
-            kind: Context::new(kind),
-        }
-    }
-}
+impl_error_conversion_with_kind!(OtherError, InternalErrorKind::Other, InternalError);
+impl_error_conversion_with_adaptor!(OtherError, InternalError, crate::Error);
 
-impl From<InternalErrorKind> for Error {
-    fn from(kind: InternalErrorKind) -> Self {
-        Into::<InternalError>::into(kind).into()
-    }
-}
-
-impl InternalErrorKind {
-    pub fn cause<F: Fail>(self, cause: F) -> InternalError {
-        InternalError {
-            kind: cause.context(self),
-        }
-    }
-
-    pub fn reason<S: Display + Debug + Sync + Send + 'static>(self, reason: S) -> InternalError {
-        InternalError {
-            kind: err_msg(reason).compat().context(self),
-        }
-    }
-}
-
-impl InternalError {
-    pub fn kind(&self) -> &InternalErrorKind {
-        &self.kind.get_context()
-    }
-}
-
-impl Fail for InternalError {
-    fn cause(&self) -> Option<&dyn Fail> {
-        self.kind.cause()
-    }
-
-    fn backtrace(&self) -> Option<&Backtrace> {
-        self.kind.backtrace()
+impl OtherError {
+    /// Creates an error with only a string as the reason.
+    pub fn new<T>(reason: T) -> Self
+    where
+        T: fmt::Display,
+    {
+        Self(reason.to_string())
     }
 }

@@ -1,24 +1,29 @@
-use ckb_error::{Error, ErrorKind};
+use ckb_error::{prelude::*, Error, ErrorKind};
 use ckb_types::packed::Byte32;
-use failure::Fail;
 
-#[derive(Fail, Debug, Clone, Eq, PartialEq)]
+/// The error type for Spec operations
+#[derive(Error, Debug, Clone, Eq, PartialEq)]
 pub enum SpecError {
-    #[fail(display = "FileNotFound")]
+    /// The file not found
+    #[error("FileNotFound")]
     FileNotFound(String),
 
-    #[fail(display = "ChainNameNotAllowed: {}", _0)]
+    /// The specified chain name is reserved.
+    #[error("ChainNameNotAllowed: {0}")]
     ChainNameNotAllowed(String),
 
-    #[fail(
-        display = "GenesisMismatch(expected: {}, actual: {})",
-        expected, actual
-    )]
-    GenesisMismatch { expected: Byte32, actual: Byte32 },
+    /// The actual calculated genesis hash is not match with provided
+    #[error("GenesisMismatch(expected: {expected}, actual: {actual})")]
+    GenesisMismatch {
+        /// The provided expected hash
+        expected: Byte32,
+        /// The actual calculated hash
+        actual: Byte32,
+    },
 }
 
 impl From<SpecError> for Error {
     fn from(error: SpecError) -> Self {
-        error.context(ErrorKind::Spec).into()
+        ErrorKind::Spec.because(error)
     }
 }

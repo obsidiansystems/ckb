@@ -1,3 +1,4 @@
+//! CKB exectuble main entry.
 use ckb_bin::run_app;
 use ckb_build_info::Version;
 
@@ -24,7 +25,7 @@ fn get_version() -> Version {
         .expect("CARGO_PKG_VERSION_PATCH parse success");
     let dash_pre = {
         let pre = env!("CARGO_PKG_VERSION_PRE");
-        if pre == "" {
+        if pre.is_empty() {
             pre.to_string()
         } else {
             "-".to_string() + pre

@@ -33,6 +33,7 @@ use ckb_vm::{
     DefaultCoreMachine, DefaultMachineBuilder, Error as VMInternalError, InstructionCycleFunc,
     SparseMemory, SupportMachine, Syscalls, TraceMachine, WXorXMemory,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -41,9 +42,43 @@ type CoreMachineType = Box<AsmCoreMachine>;
 #[cfg(not(has_asm))]
 type CoreMachineType = DefaultCoreMachine<u64, WXorXMemory<u64, SparseMemory<u64>>>;
 
-// This struct leverages CKB VM to verify transaction inputs.
-// FlatBufferBuilder owned Vec<u8> that grows as needed, in the
-// future, we might refactor this to share buffer to achieve zero-copy
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum DataGurad {
+    NotLoaded(OutPoint),
+    Loaded(Bytes),
+}
+
+/// LazyData wrapper make sure not-loaded data will be loaded only after one access
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct LazyData(RefCell<DataGurad>);
+
+impl LazyData {
+    fn from_cell_meta(cell_meta: &CellMeta) -> LazyData {
+        match &cell_meta.mem_cell_data {
+            Some(data) => LazyData(RefCell::new(DataGurad::Loaded(data.to_owned()))),
+            None => LazyData(RefCell::new(DataGurad::NotLoaded(
+                cell_meta.out_point.clone(),
+            ))),
+        }
+    }
+
+    fn access<DL: CellDataProvider>(&self, data_loader: &DL) -> Bytes {
+        let guard = self.0.borrow().to_owned();
+        match guard {
+            DataGurad::NotLoaded(out_point) => {
+                let data = data_loader.get_cell_data(&out_point).expect("cell data");
+                self.0.replace(DataGurad::Loaded(data.to_owned()));
+                data
+            }
+            DataGurad::Loaded(bytes) => bytes,
+        }
+    }
+}
+
+/// This struct leverages CKB VM to verify transaction inputs.
+///
+/// FlatBufferBuilder owned `Vec<u8>` that grows as needed, in the
+/// future, we might refactor this to share buffer to achieve zero-copy
 pub struct TransactionScriptsVerifier<'a, DL> {
     data_loader: &'a DL,
     debug_printer: Box<dyn Fn(&Byte32, &str)>,
@@ -51,13 +86,20 @@ pub struct TransactionScriptsVerifier<'a, DL> {
     outputs: Vec<CellMeta>,
     rtx: &'a ResolvedTransaction,
 
-    binaries_by_data_hash: HashMap<Byte32, Bytes>,
-    binaries_by_type_hash: HashMap<Byte32, (Bytes, bool)>,
+    binaries_by_data_hash: HashMap<Byte32, LazyData>,
+    binaries_by_type_hash: HashMap<Byte32, (LazyData, bool)>,
+
     lock_groups: HashMap<Byte32, ScriptGroup>,
     type_groups: HashMap<Byte32, ScriptGroup>,
 }
 
 impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, DL> {
+    /// Creates a script verifier for the transaction.
+    ///
+    /// ## Params
+    ///
+    /// * `rtx` - transaction which cell out points have been resolved.
+    /// * `data_loader` - used to load cell data.
     pub fn new(
         rtx: &'a ResolvedTransaction,
         data_loader: &'a DL,
@@ -80,21 +122,25 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
                     out_point,
                     transaction_info: None,
                     data_bytes: data.len() as u64,
-                    mem_cell_data: Some((data, data_hash)),
+                    mem_cell_data: Some(data),
+                    mem_cell_data_hash: Some(data_hash),
                 }
             })
             .collect();
 
-        let mut binaries_by_data_hash: HashMap<Byte32, Bytes> = HashMap::default();
-        let mut binaries_by_type_hash: HashMap<Byte32, (Bytes, bool)> = HashMap::default();
+        let mut binaries_by_data_hash: HashMap<Byte32, LazyData> = HashMap::default();
+        let mut binaries_by_type_hash: HashMap<Byte32, (LazyData, bool)> = HashMap::default();
         for cell_meta in resolved_cell_deps {
-            let (data, data_hash) = data_loader.load_cell_data(cell_meta).expect("cell data");
-            binaries_by_data_hash.insert(data_hash, data.to_owned());
+            let data_hash = data_loader
+                .load_cell_data_hash(cell_meta)
+                .expect("cell data hash");
+            let lazy = LazyData::from_cell_meta(&cell_meta);
+            binaries_by_data_hash.insert(data_hash, lazy.clone());
             if let Some(t) = &cell_meta.cell_output.type_().to_opt() {
                 binaries_by_type_hash
                     .entry(t.calc_script_hash())
                     .and_modify(|e| e.1 = true)
-                    .or_insert((data.to_owned(), false));
+                    .or_insert((lazy, false));
             }
         }
 
@@ -142,6 +188,15 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         }
     }
 
+    /// Sets a callback to handle the debug syscall.
+    ///
+    ///
+    /// Script can print a message using the [debug syscall](github.com/nervosnetwork/rfcs/blob/master/rfcs/0009-vm-syscalls/0009-vm-syscalls.md#debug).
+    ///
+    /// The callback receives two parameters:
+    ///
+    /// * `hash: &Byte32`: this is the script hash of currently running script group.
+    /// * `message: &str`: message passed to the debug syscall.
     pub fn set_debug_printer<F: Fn(&Byte32, &str) + 'static>(&mut self, func: F) {
         self.debug_printer = Box::new(func);
     }
@@ -185,8 +240,9 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         &'a self,
         group_inputs: &'a [usize],
         group_outputs: &'a [usize],
-    ) -> LoadCell<'a> {
+    ) -> LoadCell<'a, DL> {
         LoadCell::new(
+            &self.data_loader,
             &self.outputs,
             self.resolved_inputs(),
             self.resolved_cell_deps(),
@@ -240,23 +296,23 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         LoadScript::new(script)
     }
 
-    // Extracts actual script binary either in dep cells.
+    /// Extracts actual script binary either in dep cells.
     pub fn extract_script(&self, script: &'a Script) -> Result<Bytes, ScriptError> {
         match ScriptHashType::try_from(script.hash_type()).expect("checked data") {
             ScriptHashType::Data => {
-                if let Some(data) = self.binaries_by_data_hash.get(&script.code_hash()) {
-                    Ok(data.to_owned())
+                if let Some(lazy) = self.binaries_by_data_hash.get(&script.code_hash()) {
+                    Ok(lazy.access(self.data_loader))
                 } else {
                     Err(ScriptError::InvalidCodeHash)
                 }
             }
             ScriptHashType::Type => {
-                if let Some((data, multiple)) = self.binaries_by_type_hash.get(&script.code_hash())
+                if let Some((lazy, multiple)) = self.binaries_by_type_hash.get(&script.code_hash())
                 {
                     if *multiple {
                         Err(ScriptError::MultipleMatches)
                     } else {
-                        Ok(data.to_owned())
+                        Ok(lazy.access(self.data_loader))
                     }
                 } else {
                     Err(ScriptError::InvalidCodeHash)
@@ -265,36 +321,43 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         }
     }
 
+    /// Verifies the transaction by running scripts.
+    ///
+    /// ## Params
+    ///
+    /// * `max_cycles` - Maximium allowed cycles to run the scripts. The verification quits early
+    /// when the consumed cycles exceed the limit.
+    ///
+    /// ## Returns
+    ///
+    /// It returns the total consumed cycles on success, Otherwise it returns the verification error.
     pub fn verify(&self, max_cycles: Cycle) -> Result<Cycle, Error> {
         let mut cycles: Cycle = 0;
 
         // Now run each script group
         for group in self.lock_groups.values().chain(self.type_groups.values()) {
-            let cycle = self.verify_script_group(group, max_cycles).map_err(|e| {
-                #[cfg(feature = "logging")]
-                info!(
-                    "Error validating script group {} of transaction {}: {}",
-                    group.script.calc_script_hash(),
-                    self.hash(),
-                    e
-                );
-                e.source(group)
-            })?;
-            let current_cycles = cycles
+            // max_cycles must reduce by each group exec
+            let cycle = self
+                .verify_script_group(group, max_cycles - cycles)
+                .map_err(|e| {
+                    #[cfg(feature = "logging")]
+                    info!(
+                        "Error validating script group {} of transaction {}: {}",
+                        group.script.calc_script_hash(),
+                        self.hash(),
+                        e
+                    );
+                    e.source(group)
+                })?;
+            cycles = cycles
                 .checked_add(cycle)
                 .ok_or_else(|| ScriptError::ExceededMaximumCycles(max_cycles).source(group))?;
-            if current_cycles > max_cycles {
-                return Err(ScriptError::ExceededMaximumCycles(max_cycles)
-                    .source(group)
-                    .into());
-            }
-            cycles = current_cycles;
         }
         Ok(cycles)
     }
 
-    // Run a single script in current transaction, while this is not useful for
-    // CKB itself, it can be very helpful when building a CKB debugger.
+    /// Runs a single script in current transaction, while this is not useful for
+    /// CKB itself, it can be very helpful when building a CKB debugger.
     pub fn verify_single(
         &self,
         script_group_type: ScriptGroupType,
@@ -326,6 +389,7 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         }
     }
 
+    /// Finds the script group from cell deps.
     pub fn find_script_group(
         &self,
         script_group_type: ScriptGroupType,
@@ -337,10 +401,14 @@ impl<'a, DL: CellDataProvider + HeaderProvider> TransactionScriptsVerifier<'a, D
         }
     }
 
+    /// Gets the cost model.
+    ///
+    /// Cost model is used to evaluate consumed cycles.
     pub fn cost_model(&self) -> Box<InstructionCycleFunc> {
         Box::new(instruction_cycles)
     }
 
+    /// Prepares syscalls.
     pub fn generate_syscalls(
         &'a self,
         script_group: &'a ScriptGroup,
@@ -417,8 +485,9 @@ mod tests {
     use byteorder::{ByteOrder, LittleEndian};
     use ckb_crypto::secp::{Generator, Privkey, Pubkey, Signature};
     use ckb_db::RocksDB;
+    use ckb_db_schema::COLUMNS;
     use ckb_hash::{blake2b_256, new_blake2b};
-    use ckb_store::{data_loader_wrapper::DataLoaderWrapper, ChainDB, COLUMNS};
+    use ckb_store::{data_loader_wrapper::DataLoaderWrapper, ChainDB};
     use ckb_types::{
         core::{
             capacity_bytes, cell::CellMetaBuilder, Capacity, Cycle, DepType, ScriptHashType,
@@ -447,7 +516,12 @@ mod tests {
     const CYCLE_BOUND: Cycle = 200_000;
 
     fn sha3_256<T: AsRef<[u8]>>(s: T) -> [u8; 32] {
-        tiny_keccak::sha3_256(s.as_ref())
+        use tiny_keccak::{Hasher, Sha3};
+        let mut output = [0; 32];
+        let mut sha3 = Sha3::v256();
+        sha3.update(s.as_ref());
+        sha3.finalize(&mut output);
+        output
     }
 
     // NOTE: `verify` binary is outdated and most related unit tests are testing `script` crate functions
@@ -1238,9 +1312,11 @@ mod tests {
 
         let verifier = TransactionScriptsVerifier::new(&rtx, &data_loader);
 
+        // two groups need exec, so cycles not TYPE_ID_CYCLES - 1
         assert_error_eq!(
             verifier.verify(TYPE_ID_CYCLES - 1).unwrap_err(),
-            ScriptError::ExceededMaximumCycles(TYPE_ID_CYCLES - 1).input_type_script(0),
+            ScriptError::ExceededMaximumCycles(TYPE_ID_CYCLES - ALWAYS_SUCCESS_SCRIPT_CYCLE - 1)
+                .input_type_script(0),
         );
     }
 

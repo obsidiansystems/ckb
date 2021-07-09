@@ -1,14 +1,14 @@
 use crate::block_status::BlockStatus;
 use crate::relayer::compact_block_verifier::CompactBlockVerifier;
 use crate::relayer::{ReconstructionResult, Relayer};
+use crate::utils::send_message_to;
 use crate::{attempt, Status, StatusCode};
-use ckb_chain_spec::consensus::Consensus;
 use ckb_logger::{self, debug_target};
-use ckb_metrics::metrics;
 use ckb_network::{CKBProtocolContext, PeerIndex};
-use ckb_traits::{BlockMedianTimeContext, HeaderProvider};
+use ckb_traits::HeaderProvider;
 use ckb_types::{core, packed, prelude::*};
-use ckb_verification::{HeaderError, HeaderVerifier, Verifier};
+use ckb_verification::{HeaderError, HeaderVerifier};
+use ckb_verification_traits::Verifier;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -116,8 +116,6 @@ impl<'a> CompactBlockProcess<'a> {
             ));
         }
 
-        let parent = parent.unwrap();
-
         if let Some(peers) = shared
             .state()
             .read_inflight_blocks()
@@ -159,14 +157,12 @@ impl<'a> CompactBlockProcess<'a> {
                             })
                     }
                 };
-                let resolver = shared.new_header_resolver(&header, parent.into_inner());
                 let median_time_context = CompactBlockMedianTimeView {
                     fn_get_pending_header: Box::new(fn_get_pending_header),
-                    consensus: shared.consensus(),
                 };
                 let header_verifier =
                     HeaderVerifier::new(&median_time_context, &shared.consensus());
-                if let Err(err) = header_verifier.verify(&resolver) {
+                if let Err(err) = header_verifier.verify(&header) {
                     if err
                         .downcast_ref::<HeaderError>()
                         .map(|e| e.is_too_new())
@@ -259,12 +255,6 @@ impl<'a> CompactBlockProcess<'a> {
         } else {
             StatusCode::CompactBlockRequiresFreshTransactions.with_context(&block_hash)
         };
-        if !missing_transactions.is_empty() {
-            metrics!(value, "ckb-net.fresh", missing_transactions.len() as u64, "type" => "transactions", "status" => status.tag());
-        }
-        if !missing_uncles.is_empty() {
-            metrics!(value, "ckb-net.fresh", missing_uncles.len() as u64, "type" => "uncles", "status" => status.tag());
-        }
 
         let content = packed::GetBlockTransactions::new_builder()
             .block_hash(block_hash)
@@ -272,12 +262,14 @@ impl<'a> CompactBlockProcess<'a> {
             .uncle_indexes(missing_uncles.pack())
             .build();
         let message = packed::RelayMessage::new_builder().set(content).build();
-
-        if let Err(err) = self.nc.send_message_to(self.peer, message.as_bytes()) {
-            return StatusCode::Network
-                .with_context(format!("Send GetBlockTransactions error: {:?}", err));
+        let sending = send_message_to(self.nc.as_ref(), self.peer, &message);
+        if !sending.is_ok() {
+            ckb_logger::warn_target!(
+                crate::LOG_TARGET_RELAY,
+                "ignore the sending message error, error: {}",
+                sending
+            );
         }
-        crate::relayer::metrics_counter_send(message.to_enum().item_name());
 
         status
     }
@@ -285,13 +277,6 @@ impl<'a> CompactBlockProcess<'a> {
 
 struct CompactBlockMedianTimeView<'a> {
     fn_get_pending_header: Box<dyn Fn(packed::Byte32) -> Option<core::HeaderView> + 'a>,
-    consensus: &'a Consensus,
-}
-
-impl<'a> BlockMedianTimeContext for CompactBlockMedianTimeView<'a> {
-    fn median_block_count(&self) -> u64 {
-        self.consensus.median_time_block_count() as u64
-    }
 }
 
 impl<'a> HeaderProvider for CompactBlockMedianTimeView<'a> {

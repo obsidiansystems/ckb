@@ -1,37 +1,80 @@
-use ckb_db::RocksDB;
+//! TODO(doc): @quake
+use ckb_db::{ReadOnlyDB, RocksDB};
+use ckb_db_schema::MIGRATION_VERSION_KEY;
 use ckb_error::{Error, InternalErrorKind};
 use ckb_logger::{error, info};
 use console::Term;
 pub use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::collections::BTreeMap;
-use std::rc::Rc;
-
-pub const VERSION_KEY: &[u8] = b"db-version";
+use std::sync::Arc;
 
 fn internal_error(reason: String) -> Error {
-    InternalErrorKind::Database.reason(reason).into()
+    InternalErrorKind::Database.other(reason).into()
 }
 
+/// TODO(doc): @quake
 #[derive(Default)]
 pub struct Migrations {
     migrations: BTreeMap<String, Box<dyn Migration>>,
 }
 
 impl Migrations {
+    /// TODO(doc): @quake
     pub fn new() -> Self {
         Migrations {
             migrations: BTreeMap::new(),
         }
     }
 
+    /// TODO(doc): @quake
     pub fn add_migration(&mut self, migration: Box<dyn Migration>) {
         self.migrations
             .insert(migration.version().to_string(), migration);
     }
 
+    /// Check whether database requires migration
+    ///
+    /// Return true if migration is required
+    pub fn check(&self, db: &ReadOnlyDB) -> bool {
+        let db_version = match db
+            .get_pinned_default(MIGRATION_VERSION_KEY)
+            .expect("get the version of database")
+        {
+            Some(version_bytes) => {
+                String::from_utf8(version_bytes.to_vec()).expect("version bytes to utf8")
+            }
+            None => return false,
+        };
+
+        self.migrations
+            .values()
+            .last()
+            .map(|m| m.version() > db_version.as_str())
+            .unwrap_or(false)
+    }
+
+    /// Check if the migrations will consume a lot of time.
+    pub fn expensive(&self, db: &ReadOnlyDB) -> bool {
+        let db_version = match db
+            .get_pinned_default(MIGRATION_VERSION_KEY)
+            .expect("get the version of database")
+        {
+            Some(version_bytes) => {
+                String::from_utf8(version_bytes.to_vec()).expect("version bytes to utf8")
+            }
+            None => return false,
+        };
+
+        self.migrations
+            .values()
+            .skip_while(|m| m.version() <= db_version.as_str())
+            .any(|m| m.expensive())
+    }
+
+    /// TODO(doc): @quake
     pub fn migrate(&self, mut db: RocksDB) -> Result<RocksDB, Error> {
         let db_version = db
-            .get_pinned_default(VERSION_KEY)
+            .get_pinned_default(MIGRATION_VERSION_KEY)
             .map_err(|err| {
                 internal_error(format!("failed to get the version of database: {}", err))
             })?
@@ -55,7 +98,7 @@ impl Migrations {
                     }
                 }
 
-                let mpb = Rc::new(MultiProgress::new());
+                let mpb = Arc::new(MultiProgress::new());
                 let migrations: BTreeMap<_, _> = self
                     .migrations
                     .iter()
@@ -63,17 +106,18 @@ impl Migrations {
                     .collect();
                 let migrations_count = migrations.len();
                 for (idx, (_, m)) in migrations.iter().enumerate() {
-                    let mpbc = Rc::clone(&mpb);
+                    let mpbc = Arc::clone(&mpb);
                     let pb = move |count: u64| -> ProgressBar {
                         let pb = mpbc.add(ProgressBar::new(count));
-                        pb.set_draw_target(ProgressDrawTarget::to_term(Term::stdout(), None));
-                        pb.set_prefix(&format!("[{}/{}]", idx + 1, migrations_count));
+                        pb.set_draw_target(ProgressDrawTarget::term(Term::stdout(), None));
+                        pb.set_prefix(format!("[{}/{}]", idx + 1, migrations_count));
                         pb
                     };
-                    db = m.migrate(db, Box::new(pb))?;
-                    db.put_default(VERSION_KEY, m.version()).map_err(|err| {
-                        internal_error(format!("failed to migrate the database: {}", err))
-                    })?;
+                    db = m.migrate(db, Arc::new(pb))?;
+                    db.put_default(MIGRATION_VERSION_KEY, m.version())
+                        .map_err(|err| {
+                            internal_error(format!("failed to migrate the database: {}", err))
+                        })?;
                 }
                 mpb.join_and_clear().expect("MultiProgress join");
                 Ok(db)
@@ -81,9 +125,10 @@ impl Migrations {
             None => {
                 if let Some(m) = self.migrations.values().last() {
                     info!("Init database version {}", m.version());
-                    db.put_default(VERSION_KEY, m.version()).map_err(|err| {
-                        internal_error(format!("failed to migrate the database: {}", err))
-                    })?;
+                    db.put_default(MIGRATION_VERSION_KEY, m.version())
+                        .map_err(|err| {
+                            internal_error(format!("failed to migrate the database: {}", err))
+                        })?;
                 }
                 Ok(db)
             }
@@ -91,22 +136,33 @@ impl Migrations {
     }
 }
 
+/// TODO(doc): @quake
 pub trait Migration {
+    /// TODO(doc): @quake
     fn migrate(
         &self,
         _db: RocksDB,
-        _pb: Box<dyn FnMut(u64) -> ProgressBar>,
+        _pb: Arc<dyn Fn(u64) -> ProgressBar + Send + Sync>,
     ) -> Result<RocksDB, Error>;
 
     /// returns migration version, use `date +'%Y%m%d%H%M%S'` timestamp format
     fn version(&self) -> &str;
+
+    /// Will cost a lot of time to perform this migration operation.
+    ///
+    /// Override this function for `Migrations` which could be executed very fast.
+    fn expensive(&self) -> bool {
+        true
+    }
 }
 
+/// TODO(doc): @quake
 pub struct DefaultMigration {
     version: String,
 }
 
 impl DefaultMigration {
+    /// TODO(doc): @quake
     pub fn new(version: &str) -> Self {
         Self {
             version: version.to_string(),
@@ -118,13 +174,17 @@ impl Migration for DefaultMigration {
     fn migrate(
         &self,
         db: RocksDB,
-        _pb: Box<dyn FnMut(u64) -> ProgressBar>,
+        _pb: Arc<dyn Fn(u64) -> ProgressBar + Send + Sync>,
     ) -> Result<RocksDB, Error> {
         Ok(db)
     }
 
     fn version(&self) -> &str {
         &self.version
+    }
+
+    fn expensive(&self) -> bool {
+        false
     }
 }
 
@@ -149,7 +209,10 @@ mod tests {
             let r = migrations.migrate(RocksDB::open(&config, 1)).unwrap();
             assert_eq!(
                 b"20191116225943".to_vec(),
-                r.get_pinned_default(VERSION_KEY).unwrap().unwrap().to_vec()
+                r.get_pinned_default(MIGRATION_VERSION_KEY)
+                    .unwrap()
+                    .unwrap()
+                    .to_vec()
             );
         }
         {
@@ -159,7 +222,10 @@ mod tests {
             let r = migrations.migrate(RocksDB::open(&config, 1)).unwrap();
             assert_eq!(
                 b"20191127101121".to_vec(),
-                r.get_pinned_default(VERSION_KEY).unwrap().unwrap().to_vec()
+                r.get_pinned_default(MIGRATION_VERSION_KEY)
+                    .unwrap()
+                    .unwrap()
+                    .to_vec()
             );
         }
     }
@@ -174,17 +240,17 @@ mod tests {
             fn migrate(
                 &self,
                 db: RocksDB,
-                _pb: Box<dyn FnMut(u64) -> ProgressBar>,
+                _pb: Arc<dyn Fn(u64) -> ProgressBar + Send + Sync>,
             ) -> Result<RocksDB, Error> {
                 let txn = db.transaction();
                 // append 1u8 to each value of column `0`
-                let migration = |key: &[u8], value: &[u8]| -> Result<(), Error> {
+                let mut migration = |key: &[u8], value: &[u8]| -> Result<(), Error> {
                     let mut new_value = value.to_vec();
                     new_value.push(1);
                     txn.put(COLUMN, key, &new_value)?;
                     Ok(())
                 };
-                db.traverse(COLUMN, migration)?;
+                db.full_traverse(COLUMN, &mut migration)?;
                 txn.commit()?;
                 Ok(db)
             }
@@ -227,7 +293,7 @@ mod tests {
             );
             assert_eq!(
                 VERSION.as_bytes(),
-                db.get_pinned_default(VERSION_KEY)
+                db.get_pinned_default(MIGRATION_VERSION_KEY)
                     .unwrap()
                     .unwrap()
                     .to_vec()

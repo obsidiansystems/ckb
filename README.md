@@ -1,6 +1,6 @@
 # [Nervos CKB](https://www.nervos.org/) - The Common Knowledge Base
 
-[![Version](https://img.shields.io/badge/version-0.36.0--pre-orange.svg)](https://github.com/nervosnetwork/ckb/releases)
+[![Version](https://img.shields.io/badge/version-0.43.0-orange.svg)](https://github.com/nervosnetwork/ckb/releases)
 [![Telegram Group](https://cdn.jsdelivr.net/gh/Patrolavia/telegram-badge@8fe3382b3fd3a1c533ba270e608035a27e430c2e/chat.svg)](https://t.me/nervosnetwork)
 [![Nervos Talk](https://img.shields.io/badge/discuss-on%20Nervos%20Talk-3CC68A.svg)](https://talk.nervos.org/)
 
@@ -18,6 +18,8 @@ CKB supports scripting in any programming language with its own [CKB-VM](https:/
 
 [Nervos project](https://www.nervos.org) defines [a suite of scalable and interoperable blockchain protocols](https://github.com/nervosnetwork/rfcs) to create a self-evolving distributed economy, [CKB](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0002-ckb/0002-ckb.md) is among them.
 
+Support for different platforms are organized into [three tiers](docs/platform-support.md), each with a different set of guarantees.
+
 **Notice**: The ckb process will send stack trace to sentry on Rust panics.
 This is enabled by default before mainnet, which can be opted out by setting
 the option `dsn` to empty in the config file.
@@ -33,7 +35,7 @@ See more networks to join in the
 
 ## Mining
 
-CKB uses the [Eaglesong](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0010-eaglesong/0010-eaglesong.md) mining algorithm. Please check [here](https://docs.nervos.org/getting-started/mine) for more information.
+CKB uses the [Eaglesong](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0010-eaglesong/0010-eaglesong.md) mining algorithm.
 
 ## License [![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnervosnetwork%2Fckb.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fnervosnetwork%2Fckb?ref=badge_shield)
 
@@ -50,6 +52,10 @@ The `master` branch is regularly built and tested, however, it is not guaranteed
 
 The contribution workflow is described in [CONTRIBUTING.md](CONTRIBUTING.md), and security policy is described in [SECURITY.md](SECURITY.md). To propose new protocol or standard for Nervos, see [Nervos RFC](https://github.com/nervosnetwork/rfcs).
 
+## Minimum Supported Rust Version policy (MSRV)
+
+The crate `ckb`'s minimum supported rustc version is 1.51.0.
+
 ---
 
 ## Documentations
@@ -63,5 +69,6 @@ Mainnet Lina or Testnet Aggron, switch to the branch [master].
 
 - [Quick Start](docs/quick-start.md)
 - [Configure CKB](docs/configure.md)
+- [Platform Support](docs/platform-support.md)
 
 You can find a more comprehensive document website at [https://docs.nervos.org](https://docs.nervos.org).

@@ -6,8 +6,8 @@ use crate::error::TransactionErrorSource;
 use crate::TransactionError;
 use ckb_chain_spec::{build_genesis_type_id_script, OUTPUT_INDEX_DAO};
 use ckb_error::{assert_error_eq, Error};
-use ckb_test_chain_utils::MockMedianTime;
-use ckb_traits::BlockMedianTimeContext;
+use ckb_test_chain_utils::{MockMedianTime, MOCK_MEDIAN_TIME_COUNT};
+use ckb_traits::HeaderProvider;
 use ckb_types::{
     bytes::Bytes,
     constants::TX_VERSION,
@@ -32,7 +32,7 @@ pub fn test_empty() {
     assert_error_eq!(
         verifier.verify().unwrap_err(),
         TransactionError::Empty {
-            source: TransactionErrorSource::Inputs,
+            inner: TransactionErrorSource::Inputs,
         }
     );
 }
@@ -105,7 +105,7 @@ pub fn test_capacity_outofbound() {
     assert_error_eq!(
         verifier.verify().unwrap_err(),
         TransactionError::InsufficientCellCapacity {
-            source: TransactionErrorSource::Outputs,
+            inner: TransactionErrorSource::Outputs,
             index: 0,
             capacity: capacity_bytes!(50),
             occupied_capacity: capacity_bytes!(92),
@@ -165,7 +165,7 @@ pub fn test_inputs_cellbase_maturity() {
             assert_error_eq!(
                 verifier.verify().unwrap_err(),
                 TransactionError::CellbaseImmaturity {
-                    source: TransactionErrorSource::Inputs,
+                    inner: TransactionErrorSource::Inputs,
                     index: 0
                 },
                 "base_epoch = {}, current_epoch = {}, cellbase_maturity = {}",
@@ -271,7 +271,7 @@ pub fn test_deps_cellbase_maturity() {
             assert_error_eq!(
                 verifier.verify().unwrap_err(),
                 TransactionError::CellbaseImmaturity {
-                    source: TransactionErrorSource::CellDeps,
+                    inner: TransactionErrorSource::CellDeps,
                     index: 0
                 },
                 "base_epoch = {}, current_epoch = {}, cellbase_maturity = {}",
@@ -385,21 +385,19 @@ pub fn test_duplicate_header_deps() {
     );
 }
 
-fn verify_since<'a, M>(
+fn verify_since<'a, DL: HeaderProvider>(
     rtx: &'a ResolvedTransaction,
-    block_median_time_context: &'a M,
+    data_loader: &'a DL,
     block_number: BlockNumber,
     epoch_number: EpochNumber,
-) -> Result<(), Error>
-where
-    M: BlockMedianTimeContext,
-{
+) -> Result<(), Error> {
     let parent_hash = Arc::new(MockMedianTime::get_block_hash(block_number - 1));
     SinceVerifier::new(
         rtx,
-        block_median_time_context,
+        data_loader,
         block_number,
         EpochNumberWithFraction::new(epoch_number, 0, 10),
+        11,
         parent_hash.as_ref().to_owned(),
     )
     .verify()
@@ -506,6 +504,7 @@ fn test_fraction_epoch_since_verify() {
         &median_time_context,
         block_number,
         EpochNumberWithFraction::new(16, 1, 10),
+        MOCK_MEDIAN_TIME_COUNT,
         parent_hash.as_ref().to_owned(),
     )
     .verify();
@@ -516,6 +515,7 @@ fn test_fraction_epoch_since_verify() {
         &median_time_context,
         block_number,
         EpochNumberWithFraction::new(16, 5, 10),
+        MOCK_MEDIAN_TIME_COUNT,
         parent_hash.as_ref().to_owned(),
     )
     .verify();

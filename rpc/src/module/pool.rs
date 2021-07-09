@@ -1,13 +1,9 @@
 use crate::error::RPCError;
 use ckb_chain_spec::consensus::Consensus;
-use ckb_fee_estimator::FeeRate;
-use ckb_jsonrpc_types::{OutputsValidator, Transaction, TxPoolInfo};
+use ckb_jsonrpc_types::{OutputsValidator, RawTxPool, Transaction, TxPoolInfo};
 use ckb_logger::error;
-use ckb_network::PeerIndex;
 use ckb_script::IllTransactionChecker;
 use ckb_shared::shared::Shared;
-use ckb_sync::SyncShared;
-use ckb_tx_pool::error::Reject;
 use ckb_types::{core, packed, prelude::*, H256};
 use ckb_verification::{Since, SinceMetric};
 use jsonrpc_core::Result;
@@ -15,41 +11,219 @@ use jsonrpc_derive::rpc;
 use std::convert::TryInto;
 use std::sync::Arc;
 
+/// RPC Module Pool for transaction memory pool.
 #[rpc(server)]
 pub trait PoolRpc {
-    // curl -d '{"id": 2, "jsonrpc": "2.0", "method":"send_transaction","params": [{"version":2, "deps":[], "inputs":[], "outputs":[]}]}' -H 'content-type:application/json' 'http://localhost:8114'
+    /// Submits a new transaction into the transaction pool.
+    ///
+    /// ## Params
+    ///
+    /// * `transaction` - The transaction.
+    /// * `outputs_validator` - Validates the transaction outputs before entering the tx-pool. (**Optional**, default is "passthrough").
+    ///
+    /// ## Errors
+    ///
+    /// * [`PoolRejectedTransactionByOutputsValidator (-1102)`](../enum.RPCError.html#variant.PoolRejectedTransactionByOutputsValidator) - The transaction is rejected by the validator specified by `outputs_validator`. If you really want to send transactions with advanced scripts, please set `outputs_validator` to "passthrough".
+    /// * [`PoolRejectedTransactionByIllTransactionChecker (-1103)`](../enum.RPCError.html#variant.PoolRejectedTransactionByIllTransactionChecker) - Pool rejects some transactions which seem contain invalid VM instructions. See the issue link in the error message for details.
+    /// * [`PoolRejectedTransactionByMinFeeRate (-1104)`](../enum.RPCError.html#variant.PoolRejectedTransactionByMinFeeRate) - The transaction fee rate must be greater than or equal to the config option `tx_pool.min_fee_rate`.
+    /// * [`PoolRejectedTransactionByMaxAncestorsCountLimit (-1105)`](../enum.RPCError.html#variant.PoolRejectedTransactionByMaxAncestorsCountLimit) - The ancestors count must be greater than or equal to the config option `tx_pool.max_ancestors_count`.
+    /// * [`PoolIsFull (-1106)`](../enum.RPCError.html#variant.PoolIsFull) - Pool is full.
+    /// * [`PoolRejectedDuplicatedTransaction (-1107)`](../enum.RPCError.html#variant.PoolRejectedDuplicatedTransaction) - The transaction is already in the pool.
+    /// * [`TransactionFailedToResolve (-301)`](../enum.RPCError.html#variant.TransactionFailedToResolve) - Failed to resolve the referenced cells and headers used in the transaction, as inputs or dependencies.
+    /// * [`TransactionFailedToVerify (-302)`](../enum.RPCError.html#variant.TransactionFailedToVerify) - Failed to verify the transaction.
+    ///
+    /// ## Examples
+    ///
+    /// Request
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "method": "send_transaction",
+    ///   "params": [
+    ///     {
+    ///       "cell_deps": [
+    ///         {
+    ///           "dep_type": "code",
+    ///           "out_point": {
+    ///             "index": "0x0",
+    ///             "tx_hash": "0xa4037a893eb48e18ed4ef61034ce26eba9c585f15c9cee102ae58505565eccc3"
+    ///           }
+    ///         }
+    ///       ],
+    ///       "header_deps": [
+    ///         "0x7978ec7ce5b507cfb52e149e36b1a23f6062ed150503c85bbf825da3599095ed"
+    ///       ],
+    ///       "inputs": [
+    ///         {
+    ///           "previous_output": {
+    ///             "index": "0x0",
+    ///             "tx_hash": "0x365698b50ca0da75dca2c87f9e7b563811d3b5813736b8cc62cc3b106faceb17"
+    ///           },
+    ///           "since": "0x0"
+    ///         }
+    ///       ],
+    ///       "outputs": [
+    ///         {
+    ///           "capacity": "0x2540be400",
+    ///           "lock": {
+    ///             "args": "0x",
+    ///             "code_hash": "0x28e83a1277d48add8e72fadaa9248559e1b632bab2bd60b27955ebc4c03800a5",
+    ///             "hash_type": "data"
+    ///           },
+    ///           "type": null
+    ///         }
+    ///       ],
+    ///       "outputs_data": [
+    ///         "0x"
+    ///       ],
+    ///       "version": "0x0",
+    ///       "witnesses": []
+    ///     },
+    ///     "passthrough"
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Response
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "result": "0xa0ef4eb5f4ceeb08a4c8524d84c5da95dce2f608e0ca2ec8091191b0f330c6e3"
+    /// }
+    /// ```
     #[rpc(name = "send_transaction")]
     fn send_transaction(
         &self,
-        _tx: Transaction,
-        _outputs_validator: Option<OutputsValidator>,
+        tx: Transaction,
+        outputs_validator: Option<OutputsValidator>,
     ) -> Result<H256>;
 
-    // curl -d '{"params": [], "method": "tx_pool_info", "jsonrpc": "2.0", "id": 2}' -H 'content-type:application/json' http://localhost:8114
+    /// Returns the transaction pool information.
+    ///
+    /// ## Examples
+    ///
+    /// Request
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "method": "tx_pool_info",
+    ///   "params": []
+    /// }
+    /// ```
+    ///
+    /// Response
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "result": {
+    ///     "last_txs_updated_at": "0x0",
+    ///     "min_fee_rate": "0x0",
+    ///     "orphan": "0x0",
+    ///     "pending": "0x1",
+    ///     "proposed": "0x0",
+    ///     "tip_hash": "0xa5f5c85987a15de25661e5a214f2c1449cd803f071acc7999820f25246471f40",
+    ///     "tip_number": "0x400",
+    ///     "total_tx_cycles": "0x219",
+    ///     "total_tx_size": "0x112"
+    ///   }
+    /// }
+    /// ```
     #[rpc(name = "tx_pool_info")]
     fn tx_pool_info(&self) -> Result<TxPoolInfo>;
 
-    // curl -d '{"params": [], "method": "clear_tx_pool", "jsonrpc": "2.0", "id": 2}' -H 'content-type:application/json' http://localhost:8114
+    /// Removes all transactions from the transaction pool.
+    ///
+    /// ## Examples
+    ///
+    /// Request
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "method": "clear_tx_pool",
+    ///   "params": []
+    /// }
+    /// ```
+    ///
+    /// Response
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "result": null
+    /// }
+    /// ```
     #[rpc(name = "clear_tx_pool")]
     fn clear_tx_pool(&self) -> Result<()>;
+
+    /// Returns all transaction ids in tx pool as a json array of string transaction ids.
+    /// ## Params
+    ///
+    /// * `verbose` - True for a json object, false for array of transaction ids, default=false
+    ///
+    /// ## Examples
+    ///
+    /// Request
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "method": "get_raw_tx_pool",
+    ///   "params": [true]
+    /// }
+    /// ```
+    ///
+    /// Response
+    ///
+    /// ```json
+    /// {
+    ///   "id": 42,
+    ///   "jsonrpc": "2.0",
+    ///   "result":
+    ///    {
+    ///        "pending": {
+    ///            "0xa0ef4eb5f4ceeb08a4c8524d84c5da95dce2f608e0ca2ec8091191b0f330c6e3": {
+    ///                "cycles": "0x219",
+    ///                "size": "0x112",
+    ///                "fee": "0x16923f7dcf",
+    ///                "ancestors_size": "0x112",
+    ///                "ancestors_cycles": "0x219",
+    ///                "ancestors_count": "0x1"
+    ///            }
+    ///        },
+    ///        "proposed": {}
+    ///    }
+    /// }
+    /// ```
+
+    #[rpc(name = "get_raw_tx_pool")]
+    fn get_raw_tx_pool(&self, verbose: Option<bool>) -> Result<RawTxPool>;
 }
 
 pub(crate) struct PoolRpcImpl {
-    sync_shared: Arc<SyncShared>,
     shared: Shared,
-    min_fee_rate: FeeRate,
+    min_fee_rate: core::FeeRate,
     reject_ill_transactions: bool,
 }
 
 impl PoolRpcImpl {
     pub fn new(
         shared: Shared,
-        sync_shared: Arc<SyncShared>,
-        min_fee_rate: FeeRate,
+        min_fee_rate: core::FeeRate,
         reject_ill_transactions: bool,
     ) -> PoolRpcImpl {
         PoolRpcImpl {
-            sync_shared,
             shared,
             min_fee_rate,
             reject_ill_transactions,
@@ -94,36 +268,18 @@ impl PoolRpc for PoolRpcImpl {
         }
 
         let tx_pool = self.shared.tx_pool_controller();
-        let submit_txs = tx_pool.submit_txs(vec![tx.clone()]);
+        let submit_tx = tx_pool.submit_local_tx(tx.clone());
 
-        if let Err(e) = submit_txs {
-            error!("send submit_txs request error {}", e);
+        if let Err(e) = submit_tx {
+            error!("send submit_tx request error {}", e);
             return Err(RPCError::ckb_internal_error(e));
         }
 
-        let broadcast = |tx_hash: packed::Byte32| {
-            // workaround: we are using `PeerIndex(usize::max)` to indicate that tx hash source is itself.
-            let peer_index = PeerIndex::new(usize::max_value());
-            self.sync_shared
-                .state()
-                .tx_hashes()
-                .entry(peer_index)
-                .or_default()
-                .insert(tx_hash);
-        };
         let tx_hash = tx.hash();
-        match submit_txs.unwrap() {
-            Ok(_) => {
-                broadcast(tx_hash.clone());
-                Ok(tx_hash.unpack())
-            }
+        match submit_tx.unwrap() {
+            Ok(_) => Ok(tx_hash.unpack()),
             Err(e) => match RPCError::downcast_submit_transaction_reject(&e) {
-                Some(reject) => {
-                    if let Reject::Duplicated(_) = reject {
-                        broadcast(tx_hash);
-                    }
-                    Err(RPCError::from_submit_transaction_reject(reject))
-                }
+                Some(reject) => Err(RPCError::from_submit_transaction_reject(reject)),
                 None => Err(RPCError::from_ckb_error(e)),
             },
         }
@@ -160,6 +316,23 @@ impl PoolRpc for PoolRpcImpl {
             .map_err(|err| RPCError::custom(RPCError::Invalid, err.to_string()))?;
 
         Ok(())
+    }
+
+    fn get_raw_tx_pool(&self, verbose: Option<bool>) -> Result<RawTxPool> {
+        let tx_pool = self.shared.tx_pool_controller();
+
+        let raw = if verbose.unwrap_or(false) {
+            let info = tx_pool
+                .get_all_entry_info()
+                .map_err(|err| RPCError::custom(RPCError::CKBInternalError, err.to_string()))?;
+            RawTxPool::Verbose(info.into())
+        } else {
+            let ids = tx_pool
+                .get_all_ids()
+                .map_err(|err| RPCError::custom(RPCError::CKBInternalError, err.to_string()))?;
+            RawTxPool::Ids(ids.into())
+        };
+        Ok(raw)
     }
 }
 

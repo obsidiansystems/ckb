@@ -1,12 +1,17 @@
 use crate::chain::{ChainController, ChainService};
+use ckb_app_config::{BlockAssemblerConfig, NetworkConfig};
 use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder};
 use ckb_dao::DaoCalculator;
 use ckb_dao_utils::genesis_dao_data;
+use ckb_jsonrpc_types::ScriptHashType;
+use ckb_network::{DefaultExitHandler, NetworkController, NetworkService, NetworkState};
 use ckb_shared::shared::Shared;
-use ckb_shared::shared::SharedBuilder;
+use ckb_shared::SharedBuilder;
 use ckb_store::ChainStore;
 pub use ckb_test_chain_utils::MockStore;
-use ckb_test_chain_utils::{always_success_cell, load_input_data_hash_cell};
+use ckb_test_chain_utils::{
+    always_success_cell, load_input_data_hash_cell, load_input_one_byte_cell,
+};
 use ckb_types::prelude::*;
 use ckb_types::{
     bytes::Bytes,
@@ -16,11 +21,13 @@ use ckb_types::{
         BlockBuilder, BlockView, Capacity, EpochNumberWithFraction, HeaderView, TransactionBuilder,
         TransactionView,
     },
+    h256,
     packed::{self, Byte32, CellDep, CellInput, CellOutput, CellOutputBuilder, OutPoint},
     utilities::{difficulty_to_compact, DIFF_TWO},
-    U256,
+    H256, U256,
 };
 use std::collections::HashSet;
+use std::sync::Arc;
 
 const MIN_CAP: Capacity = capacity_bytes!(60);
 
@@ -45,8 +52,23 @@ pub(crate) fn create_load_input_data_hash_cell_tx() -> TransactionView {
         .build()
 }
 
+pub(crate) fn create_load_input_one_byte_cell_tx() -> TransactionView {
+    let (ref load_input_one_byte_cell, ref load_input_one_byte_cell_data, ref script) =
+        load_input_one_byte_cell();
+    TransactionBuilder::default()
+        .witness(script.clone().into_witness())
+        .input(CellInput::new(OutPoint::null(), 0))
+        .output(load_input_one_byte_cell.clone())
+        .output_data(load_input_one_byte_cell_data.pack())
+        .build()
+}
+
 pub(crate) fn create_load_input_data_hash_cell_out_point() -> OutPoint {
     OutPoint::new(create_load_input_data_hash_cell_tx().hash(), 0)
+}
+
+pub(crate) fn create_load_input_one_byte_out_point() -> OutPoint {
+    OutPoint::new(create_load_input_one_byte_cell_tx().hash(), 0)
 }
 
 // NOTE: this is quite a waste of resource but the alternative is to modify 100+
@@ -56,7 +78,7 @@ pub(crate) fn create_always_success_out_point() -> OutPoint {
 }
 
 pub(crate) fn start_chain(consensus: Option<Consensus>) -> (ChainController, Shared, HeaderView) {
-    let builder = SharedBuilder::default();
+    let builder = SharedBuilder::with_temp_db();
     let (_, _, always_success_script) = always_success_cell();
     let consensus = consensus.unwrap_or_else(|| {
         let tx = create_always_success_tx();
@@ -89,9 +111,23 @@ pub(crate) fn start_chain(consensus: Option<Consensus>) -> (ChainController, Sha
             .genesis_block(genesis_block)
             .build()
     });
-    let (shared, table) = builder.consensus(consensus).build().unwrap();
 
-    let chain_service = ChainService::new(shared.clone(), table);
+    let config = BlockAssemblerConfig {
+        code_hash: h256!("0x0"),
+        args: Default::default(),
+        hash_type: ScriptHashType::Data,
+        message: Default::default(),
+    };
+
+    let (shared, mut pack) = builder
+        .consensus(consensus)
+        .block_assembler_config(Some(config))
+        .build()
+        .unwrap();
+    let network = dummy_network(&shared);
+    pack.take_tx_pool_builder().start(network);
+
+    let chain_service = ChainService::new(shared.clone(), pack.take_proposal_table());
     let chain_controller = chain_service.start::<&str>(None);
     let parent = {
         let snapshot = shared.snapshot();
@@ -113,7 +149,8 @@ pub(crate) fn calculate_reward(
     let target_number = consensus.finalize_target(number).unwrap();
     let target_hash = store.0.get_block_hash(target_number).unwrap();
     let target = store.0.get_block_header(&target_hash).unwrap();
-    let calculator = DaoCalculator::new(consensus, store.store());
+    let data_loader = store.store().as_data_provider();
+    let calculator = DaoCalculator::new(consensus, &data_loader);
     calculator
         .primary_block_reward(&target)
         .unwrap()
@@ -236,6 +273,35 @@ pub(crate) fn create_transaction_with_out_point(
         .build()
 }
 
+pub(crate) fn dummy_network(shared: &Shared) -> NetworkController {
+    let tmp_dir = tempfile::Builder::new().tempdir().unwrap();
+    let config = NetworkConfig {
+        max_peers: 19,
+        max_outbound_peers: 5,
+        path: tmp_dir.path().to_path_buf(),
+        ping_interval_secs: 15,
+        ping_timeout_secs: 20,
+        connect_outbound_interval_secs: 1,
+        discovery_local_address: true,
+        bootnode_mode: true,
+        reuse: true,
+        ..Default::default()
+    };
+
+    let network_state =
+        Arc::new(NetworkState::from_config(config).expect("Init network state failed"));
+    NetworkService::new(
+        network_state,
+        vec![],
+        vec![],
+        shared.consensus().identify_name(),
+        "test".to_string(),
+        DefaultExitHandler::default(),
+    )
+    .start(shared.async_handle())
+    .expect("Start network service failed")
+}
+
 #[derive(Clone)]
 pub struct MockChain<'a> {
     blocks: Vec<BlockView>,
@@ -268,15 +334,11 @@ impl<'a> MockChain<'a> {
         let cellbase = create_cellbase(store, self.consensus, &parent);
         let dao = dao_data(&self.consensus, &parent, &[cellbase.clone()], store, false);
 
-        let last_epoch = store
-            .0
-            .get_block_epoch_index(&parent.hash())
-            .and_then(|index| store.0.get_epoch_ext(&index))
-            .unwrap();
-        let epoch = store
-            .0
-            .next_epoch_ext(self.consensus, &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+        let epoch = self
+            .consensus
+            .next_epoch_ext(&parent, &store.0.as_data_provider())
+            .unwrap()
+            .epoch();
 
         let new_block = BlockBuilder::default()
             .parent_hash(parent.hash())
@@ -351,15 +413,11 @@ impl<'a> MockChain<'a> {
         let cellbase = create_cellbase(store, self.consensus, &parent);
         let dao = dao_data(&self.consensus, &parent, &[cellbase.clone()], store, false);
 
-        let last_epoch = store
-            .0
-            .get_block_epoch_index(&parent.hash())
-            .and_then(|index| store.0.get_epoch_ext(&index))
-            .unwrap();
-        let epoch = store
-            .0
-            .next_epoch_ext(self.consensus, &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+        let epoch = self
+            .consensus
+            .next_epoch_ext(&parent, &store.0.as_data_provider())
+            .unwrap()
+            .epoch();
 
         let new_block = BlockBuilder::default()
             .parent_hash(parent.hash())
@@ -379,15 +437,11 @@ impl<'a> MockChain<'a> {
         let cellbase = create_cellbase(store, self.consensus, &parent);
         let dao = dao_data(&self.consensus, &parent, &[cellbase.clone()], store, false);
 
-        let last_epoch = store
-            .0
-            .get_block_epoch_index(&parent.hash())
-            .and_then(|index| store.0.get_epoch_ext(&index))
-            .unwrap();
-        let epoch = store
-            .0
-            .next_epoch_ext(self.consensus, &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+        let epoch = self
+            .consensus
+            .next_epoch_ext(&parent, &store.0.as_data_provider())
+            .unwrap()
+            .epoch();
 
         let new_block = BlockBuilder::default()
             .parent_hash(parent.hash())
@@ -419,15 +473,11 @@ impl<'a> MockChain<'a> {
             ignore_resolve_error,
         );
 
-        let last_epoch = store
-            .0
-            .get_block_epoch_index(&parent.hash())
-            .and_then(|index| store.0.get_epoch_ext(&index))
-            .unwrap();
-        let epoch = store
-            .0
-            .next_epoch_ext(self.consensus, &last_epoch, &parent)
-            .unwrap_or(last_epoch);
+        let epoch = self
+            .consensus
+            .next_epoch_ext(&parent, &store.0.as_data_provider())
+            .unwrap()
+            .epoch();
 
         let new_block = BlockBuilder::default()
             .parent_hash(parent.hash())
@@ -495,6 +545,7 @@ pub fn dao_data(
     } else {
         rtxs.unwrap()
     };
-    let calculator = DaoCalculator::new(consensus, store.store());
+    let data_loader = store.0.as_data_provider();
+    let calculator = DaoCalculator::new(consensus, &data_loader);
     calculator.dao_field(&rtxs, &parent).unwrap()
 }

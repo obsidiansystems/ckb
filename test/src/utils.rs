@@ -1,19 +1,21 @@
-use crate::{Net, Node, TXOSet};
-use ckb_jsonrpc_types::{BlockTemplate, TransactionWithStatus, TxStatus};
+use crate::global::PORT_COUNTER;
+use crate::util::check::is_transaction_committed;
+use crate::util::mining::mine;
+use crate::{Node, TXOSet};
 use ckb_network::bytes::Bytes;
 use ckb_types::{
     core::{BlockNumber, BlockView, EpochNumber, HeaderView, TransactionView},
-    h256,
     packed::{
-        Block, BlockTransactions, Byte32, CompactBlock, GetBlocks, RelayMessage, RelayTransaction,
+        BlockTransactions, Byte32, CompactBlock, GetBlocks, RelayMessage, RelayTransaction,
         RelayTransactionHashes, RelayTransactions, SendBlock, SendHeaders, SyncMessage,
     },
     prelude::*,
-    H256,
 };
+use core::sync::atomic::Ordering::SeqCst;
 use std::convert::Into;
 use std::env;
 use std::fs::read_to_string;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -124,13 +126,6 @@ pub fn build_relay_tx_hashes(hashes: &[Byte32]) -> Bytes {
     RelayMessage::new_builder().set(content).build().as_bytes()
 }
 
-pub fn new_block_with_template(template: BlockTemplate) -> BlockView {
-    Block::from(template)
-        .as_advanced_builder()
-        .nonce(rand::random::<u128>().pack())
-        .build()
-}
-
 pub fn wait_until<F>(secs: u64, mut f: F) -> bool
 where
     F: FnMut() -> bool,
@@ -150,17 +145,12 @@ pub fn sleep(secs: u64) {
     thread::sleep(tweaked_duration(secs));
 }
 
-fn tweaked_duration(secs: u64) -> Duration {
+pub fn tweaked_duration(secs: u64) -> Duration {
     let sec_coefficient = env::var("CKB_TEST_SEC_COEFFICIENT")
         .unwrap_or_default()
         .parse()
         .unwrap_or(1.0);
     Duration::from_secs((secs as f64 * sec_coefficient) as u64)
-}
-
-// Clear net message channel
-pub fn clear_messages(net: &Net) {
-    while net.receive_timeout(Duration::new(3, 0)).is_ok() {}
 }
 
 pub fn since_from_relative_block_number(block_number: BlockNumber) -> u64 {
@@ -206,18 +196,13 @@ pub fn assert_send_transaction_fail(node: &Node, transaction: &TransactionView, 
     );
 }
 
-pub fn is_committed(tx_status: &TransactionWithStatus) -> bool {
-    let committed_status = TxStatus::committed(h256!("0x0"));
-    tx_status.tx_status.status == committed_status.status
-}
-
 /// Return a random path located on temp_dir
 ///
 /// We use `tempdir` only for generating a random path, and expect the corresponding directory
 /// that `tempdir` creates be deleted when go out of this function.
-pub fn temp_path(case_name: &str, id: &str) -> String {
+pub fn temp_path(case_name: &str, suffix: &str) -> PathBuf {
     let mut builder = tempfile::Builder::new();
-    let prefix = ["ckb-it", case_name, id, ""].join("-");
+    let prefix = ["ckb-it", case_name, suffix, ""].join("-");
     builder.prefix(&prefix);
     let tempdir = if let Ok(val) = env::var("CKB_INTEGRATION_TEST_TMP") {
         builder.tempdir_in(val)
@@ -225,7 +210,7 @@ pub fn temp_path(case_name: &str, id: &str) -> String {
         builder.tempdir()
     }
     .expect("create tempdir failed");
-    let path = tempdir.path().to_str().unwrap().to_owned();
+    let path = tempdir.path().to_owned();
     tempdir.close().expect("close tempdir failed");
     path
 }
@@ -234,13 +219,13 @@ pub fn temp_path(case_name: &str, id: &str) -> String {
 pub fn generate_utxo_set(node: &Node, n: usize) -> TXOSet {
     // Ensure all the cellbases will be used later are already mature.
     let cellbase_maturity = node.consensus().cellbase_maturity();
-    node.generate_blocks(cellbase_maturity.index() as usize);
+    mine(node, cellbase_maturity.index());
 
     // Explode these mature cellbases into multiple cells
     let mut n_outputs = 0;
     let mut txs = Vec::new();
     while n > n_outputs {
-        node.generate_block();
+        mine(node, 1);
         let mature_number = node.get_tip_block_number() - cellbase_maturity.index();
         let mature_block = node.get_block_by_number(mature_number);
         let mature_cellbase = mature_block.transaction(0).unwrap();
@@ -258,11 +243,8 @@ pub fn generate_utxo_set(node: &Node, n: usize) -> TXOSet {
     txs.iter().for_each(|tx| {
         node.submit_transaction(tx);
     });
-    while txs
-        .iter()
-        .any(|tx| !is_committed(&node.rpc_client().get_transaction(tx.hash()).unwrap()))
-    {
-        node.generate_blocks(node.consensus().finalization_delay_length() as usize);
+    while txs.iter().any(|tx| !is_transaction_committed(node, tx)) {
+        mine(node, node.consensus().finalization_delay_length());
     }
 
     let mut utxos = TXOSet::default();
@@ -305,20 +287,18 @@ pub fn blank(node: &Node) -> BlockView {
 }
 
 // grep "panicked at" $node_log_path
-pub fn nodes_panicked(node_dirs: &[String]) -> bool {
-    node_dirs.iter().any(|node_dir| {
-        read_to_string(&node_log(&node_dir))
-            .expect("failed to read node's log")
+pub fn nodes_panicked(node_log_paths: &[PathBuf]) -> bool {
+    node_log_paths.iter().any(|log_path| {
+        read_to_string(log_path)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to read node's log {}, error: {:?}",
+                    log_path.display(),
+                    err
+                )
+            })
             .contains("panicked at")
     })
-}
-
-// node_log=$node_dir/data/logs/run.log
-pub fn node_log(node_dir: &str) -> PathBuf {
-    PathBuf::from(node_dir)
-        .join("data")
-        .join("logs")
-        .join("run.log")
 }
 
 pub fn now_ms() -> u64 {
@@ -327,4 +307,25 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
     since_the_epoch.as_millis() as u64
+}
+
+pub fn find_available_port() -> u16 {
+    for _ in 0..2000 {
+        let port = PORT_COUNTER.fetch_add(1, SeqCst);
+        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+        if TcpListener::bind(address).is_ok() {
+            return port;
+        }
+    }
+    panic!("failed to allocate available port")
+}
+
+pub fn message_name(data: &Bytes) -> String {
+    if let Ok(message) = SyncMessage::from_slice(data) {
+        message.to_enum().item_name().to_string()
+    } else if let Ok(message) = RelayMessage::from_slice(data) {
+        message.to_enum().item_name().to_string()
+    } else {
+        panic!("unknown message item");
+    }
 }

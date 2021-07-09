@@ -1,14 +1,13 @@
 use crate::specs::tx_pool::utils::{assert_new_block_committed, prepare_tx_family};
+use crate::util::mining::{mine, mine_until_out_bootstrap_period};
 use crate::utils::{blank, propose};
-use crate::{Net, Node, Spec};
+use crate::{Node, Spec};
 use ckb_types::core::BlockView;
 
 pub struct ReorgHandleProposals;
 
 impl Spec for ReorgHandleProposals {
-    crate::name!("reorg_handle_proposals");
-
-    crate::setup!(num_nodes: 2, connect_all: false);
+    crate::setup!(num_nodes: 2);
 
     // Case: Check txpool handling proposals during reorg.
     //
@@ -23,13 +22,13 @@ impl Spec for ReorgHandleProposals {
     // and `tx_family.b` becomes proposed but unable to be committed since "parent requirement";
     // when a node switch the main-fork from fork-B to fork-A, `tx_family.b` becomes non-proposed,
     // and `tx.family.a` becomes proposed and able to be committed.
-    fn run(&self, net: &mut Net) {
+    fn run(&self, nodes: &mut Vec<Node>) {
         // 1. At the beginning, `node_a` maintains fork-A, `node_b` maintains fork-B
-        let node_a = &net.nodes[0];
-        let node_b = &net.nodes[1];
+        let node_a = &nodes[0];
+        let node_b = &nodes[1];
         let window = node_a.consensus().tx_proposal_window();
 
-        node_a.generate_blocks(window.farthest() as usize + 2);
+        mine_until_out_bootstrap_period(node_a);
         let family = prepare_tx_family(node_a);
         dump_chain(node_a).iter().for_each(|block| {
             node_b.submit_block(block);
@@ -80,8 +79,8 @@ impl Spec for ReorgHandleProposals {
         // fork-A, whose valid proposals are `[tx_family.a]` which be able to be committed.
         assert_new_block_committed(node_a, &[]);
         assert_new_block_committed(node_b, &[family.a().clone()]);
-        node_a.generate_block();
-        node_b.generate_block();
+        mine(&node_a, 1);
+        mine(&node_b, 1);
     }
 }
 

@@ -1,3 +1,5 @@
+//! CKB logger and logging service.
+
 use ansi_term::Colour;
 use backtrace::Backtrace;
 use chrono::prelude::{DateTime, Local};
@@ -8,7 +10,7 @@ use once_cell::sync::OnceCell;
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, panic, process, sync, thread};
 
 use ckb_logger_config::Config;
@@ -34,17 +36,23 @@ enum Message {
     Terminate,
 }
 
+/// The CKB logger which implements [log::Log].
+///
+/// When a CKB logger is created, a logging service will be started in a background thread.
+///
+/// [log::Log]: https://docs.rs/log/*/log/trait.Log.html
 #[derive(Debug)]
 pub struct Logger {
     sender: ckb_channel::Sender<Message>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
     filter: sync::Arc<RwLock<Filter>>,
+    #[cfg(feature = "with_sentry")]
     emit_sentry_breadcrumbs: bool,
     extra_loggers: sync::Arc<RwLock<HashMap<String, ExtraLogger>>>,
 }
 
 #[derive(Debug)]
-pub struct MainLogger {
+struct MainLogger {
     file_path: PathBuf,
     file: Option<fs::File>,
     to_stdout: bool,
@@ -53,7 +61,7 @@ pub struct MainLogger {
 }
 
 #[derive(Debug)]
-pub struct ExtraLogger {
+struct ExtraLogger {
     filter: Filter,
 }
 
@@ -109,7 +117,7 @@ fn test_convert_compatible_crate_name() {
 }
 
 impl Logger {
-    fn new(config: Config) -> Logger {
+    fn new(env_opt: Option<&str>, config: Config) -> Logger {
         for name in config.extra.keys() {
             if let Err(err) = Self::check_extra_logger_name(name) {
                 eprintln!("Error: {}", err);
@@ -152,7 +160,7 @@ impl Logger {
         };
 
         let filter = {
-            let filter = if let Ok(ref env_filter) = std::env::var("CKB_LOG") {
+            let filter = if let Some(Ok(ref env_filter)) = env_opt.map(std::env::var) {
                 Self::build_filter(env_filter)
             } else if let Some(ref config_filter) = config.filter {
                 Self::build_filter(config_filter)
@@ -295,12 +303,13 @@ impl Logger {
             sender,
             handle: Mutex::new(Some(tb)),
             filter,
+            #[cfg(feature = "with_sentry")]
             emit_sentry_breadcrumbs: config.emit_sentry_breadcrumbs.unwrap_or_default(),
             extra_loggers,
         }
     }
 
-    fn open_log_file(file_path: &PathBuf) -> Result<fs::File, String> {
+    fn open_log_file(file_path: &Path) -> Result<fs::File, String> {
         fs::OpenOptions::new()
             .append(true)
             .create(true)
@@ -331,7 +340,7 @@ impl Logger {
             })
     }
 
-    pub fn filter(&self) -> LevelFilter {
+    fn filter(&self) -> LevelFilter {
         Self::max_level_filter(&self.filter.read(), &self.extra_loggers.read())
     }
 
@@ -347,6 +356,7 @@ impl Logger {
             })
     }
 
+    /// Updates the main logger.
     pub fn update_main_logger(
         filter_str: Option<String>,
         to_stdout: Option<bool>,
@@ -363,16 +373,19 @@ impl Logger {
         Self::send_message(message)
     }
 
+    /// Checks if the input extra logger name is valid.
     pub fn check_extra_logger_name(name: &str) -> Result<(), String> {
         strings::check_if_identifier_is_valid(name)
     }
 
+    /// Updates an extra logger through it's name.
     pub fn update_extra_logger(name: String, filter_str: String) -> Result<(), String> {
         let filter = Self::build_filter(&filter_str);
         let message = Message::UpdateExtraLogger(name, filter);
         Self::send_message(message)
     }
 
+    /// Removes an extra logger.
     pub fn remove_extra_logger(name: String) -> Result<(), String> {
         let message = Message::RemoveExtraLogger(name);
         Self::send_message(message)
@@ -405,6 +418,7 @@ impl Log for Logger {
             })
             .collect::<Vec<_>>();
         if is_match || !extras.is_empty() {
+            #[cfg(feature = "with_sentry")]
             if self.emit_sentry_breadcrumbs {
                 use sentry::{add_breadcrumb, integrations::log::breadcrumb_from_record};
                 add_breadcrumb(|| breadcrumb_from_record(record));
@@ -446,7 +460,7 @@ fn sanitize_color(s: &str) -> String {
     re.replace_all(s, "").to_string()
 }
 
-/// Flush the logger when dropped
+/// Flushes the logger when dropped.
 #[must_use]
 pub struct LoggerInitGuard;
 
@@ -456,10 +470,11 @@ impl Drop for LoggerInitGuard {
     }
 }
 
-pub fn init(config: Config) -> Result<LoggerInitGuard, SetLoggerError> {
+/// Initializes the [Logger](struct.Logger.html) and run the logging service.
+pub fn init(env_opt: Option<&str>, config: Config) -> Result<LoggerInitGuard, SetLoggerError> {
     setup_panic_logger();
 
-    let logger = Logger::new(config);
+    let logger = Logger::new(env_opt, config);
     let filter = logger.filter();
     log::set_boxed_logger(Box::new(logger)).map(|_| {
         log::set_max_level(filter);
@@ -467,6 +482,7 @@ pub fn init(config: Config) -> Result<LoggerInitGuard, SetLoggerError> {
     })
 }
 
+/// Flushes any buffered records.
 pub fn flush() {
     log::logger().flush()
 }

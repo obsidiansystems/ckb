@@ -1,5 +1,6 @@
 use ckb_db::RocksDB;
-use ckb_store::{ChainDB, ChainStore, COLUMNS};
+use ckb_db_schema::COLUMNS;
+use ckb_store::{ChainDB, ChainStore};
 use ckb_types::core::error::OutPointError;
 use ckb_types::{
     core::{
@@ -11,6 +12,8 @@ use ckb_types::{
 };
 use std::sync::Arc;
 
+/// A temporary RocksDB for mocking chain storage.
+#[doc(hidden)]
 #[derive(Clone)]
 pub struct MockStore(pub Arc<ChainDB>);
 
@@ -22,8 +25,9 @@ impl Default for MockStore {
 }
 
 impl MockStore {
+    /// Create a new `MockStore` with insert parent block into the temporary database for reference.
+    #[doc(hidden)]
     pub fn new(parent: &HeaderView, chain_store: &ChainDB) -> Self {
-        // Insert parent block into current mock store for referencing
         let block = chain_store.get_block(&parent.hash()).unwrap();
         let epoch_ext = chain_store
             .get_block_epoch_index(&parent.hash())
@@ -34,10 +38,14 @@ impl MockStore {
         store
     }
 
+    /// Return the mock chainDB.
+    #[doc(hidden)]
     pub fn store(&self) -> &ChainDB {
         &self.0
     }
 
+    /// Insert a block into mock chainDB.
+    #[doc(hidden)]
     pub fn insert_block(&self, block: &BlockView, epoch_ext: &EpochExt) {
         let db_txn = self.0.begin_transaction();
         let last_block_hash_in_previous_epoch = epoch_ext.last_block_hash_in_previous_epoch();
@@ -52,18 +60,18 @@ impl MockStore {
         db_txn.commit().unwrap();
     }
 
+    /// Remove a block from mock chainDB.
+    #[doc(hidden)]
     pub fn remove_block(&self, block: &BlockView) {
         let db_txn = self.0.begin_transaction();
-        db_txn
-            .delete_block(&block.header().hash(), block.transactions().len())
-            .unwrap();
+        db_txn.delete_block(&block).unwrap();
         db_txn.detach_block(&block).unwrap();
         db_txn.commit().unwrap();
     }
 }
 
 impl CellProvider for MockStore {
-    fn cell(&self, out_point: &OutPoint, with_data: bool) -> CellStatus {
+    fn cell(&self, out_point: &OutPoint, _eager_load: bool) -> CellStatus {
         match self.0.get_transaction(&out_point.tx_hash()) {
             Some((tx, _)) => tx
                 .outputs()
@@ -74,12 +82,9 @@ impl CellProvider for MockStore {
                         .get(out_point.index().unpack())
                         .expect("output data");
 
-                    let mut cell_meta = CellMetaBuilder::from_cell_output(cell, data.unpack())
+                    let cell_meta = CellMetaBuilder::from_cell_output(cell, data.unpack())
                         .out_point(out_point.to_owned())
                         .build();
-                    if !with_data {
-                        cell_meta.mem_cell_data = None;
-                    }
 
                     CellStatus::live_cell(cell_meta)
                 })
@@ -90,11 +95,11 @@ impl CellProvider for MockStore {
 }
 
 impl HeaderChecker for MockStore {
-    fn check_valid(&self, block_hash: &Byte32) -> Result<(), ckb_error::Error> {
+    fn check_valid(&self, block_hash: &Byte32) -> Result<(), OutPointError> {
         if self.0.get_block_number(block_hash).is_some() {
             Ok(())
         } else {
-            Err(OutPointError::InvalidHeader(block_hash.clone()).into())
+            Err(OutPointError::InvalidHeader(block_hash.clone()))
         }
     }
 }

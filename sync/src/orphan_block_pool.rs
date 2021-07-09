@@ -4,7 +4,7 @@ use ckb_util::RwLock;
 use std::collections::{HashMap, VecDeque};
 
 pub type ParentHash = packed::Byte32;
-const SHRINK_THREHOLD: usize = 100;
+const SHRINK_THRESHOLD: usize = 100;
 
 // NOTE: Never use `LruCache` as container. We have to ensure synchronizing between
 // orphan_block_pool and block_status_map, but `LruCache` would prune old items implicitly.
@@ -55,8 +55,8 @@ impl OrphanBlockPool {
             }
         }
 
-        shrink_to_fit!(blocks_map, SHRINK_THREHOLD);
-        shrink_to_fit!(parents_map, SHRINK_THREHOLD);
+        shrink_to_fit!(blocks_map, SHRINK_THRESHOLD);
+        shrink_to_fit!(parents_map, SHRINK_THRESHOLD);
         removed
     }
 
@@ -83,7 +83,6 @@ mod tests {
     use ckb_types::prelude::*;
     use faketime::unix_time_as_millis;
     use std::collections::HashSet;
-    use std::iter::FromIterator;
     use std::sync::Arc;
     use std::thread;
 
@@ -111,8 +110,8 @@ mod tests {
         }
 
         let orphan = pool.remove_blocks_by_parent(&consensus.genesis_block().hash());
-        let orphan: HashSet<BlockView> = HashSet::from_iter(orphan.into_iter());
-        let block: HashSet<BlockView> = HashSet::from_iter(blocks.into_iter());
+        let orphan: HashSet<BlockView> = orphan.into_iter().collect();
+        let block: HashSet<BlockView> = blocks.into_iter().collect();
         assert_eq!(orphan, block)
     }
 

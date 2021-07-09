@@ -1,16 +1,17 @@
+use crate::chain::ChainService;
 use crate::tests::util::{MockChain, MockStore};
-use crate::{chain::ChainService, switch::Switch};
 use ckb_chain_spec::consensus::Consensus;
-use ckb_shared::shared::SharedBuilder;
+use ckb_shared::SharedBuilder;
 use ckb_store::ChainStore;
+use ckb_verification_traits::Switch;
 use std::sync::Arc;
 
 #[test]
 fn test_truncate() {
-    let builder = SharedBuilder::default();
+    let builder = SharedBuilder::with_temp_db();
 
-    let (shared, table) = builder.consensus(Consensus::default()).build().unwrap();
-    let mut chain_service = ChainService::new(shared.clone(), table);
+    let (shared, mut pack) = builder.consensus(Consensus::default()).build().unwrap();
+    let mut chain_service = ChainService::new(shared.clone(), pack.take_proposal_table());
 
     let genesis = shared
         .store()

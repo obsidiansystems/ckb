@@ -14,6 +14,7 @@ pub enum Behaviour {
 }
 
 impl Behaviour {
+    /// Behaviour score
     pub fn score(self) -> Score {
         #[cfg(test)]
         match self {

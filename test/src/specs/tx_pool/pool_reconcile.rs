@@ -1,25 +1,25 @@
-use crate::{Net, Spec, DEFAULT_TX_PROPOSAL_WINDOW};
-use log::info;
+use crate::node::waiting_for_sync;
+use crate::util::mining::{mine, mine_until_out_bootstrap_period};
+use crate::{Node, Spec};
+use ckb_logger::info;
 
 pub struct PoolReconcile;
 
 impl Spec for PoolReconcile {
-    crate::name!("pool_reconcile");
+    crate::setup!(num_nodes: 2);
 
-    crate::setup!(connect_all: false, num_nodes: 2);
-
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
 
         info!("Generate DEFAULT_TX_PROPOSAL_WINDOW block on node0");
-        node0.generate_blocks((DEFAULT_TX_PROPOSAL_WINDOW.1 + 2) as usize);
+        mine_until_out_bootstrap_period(node0);
 
         info!("Use generated block's cellbase as tx input");
         let hash = node0.generate_transaction();
 
         info!("Generate 3 more blocks on node0");
-        node0.generate_blocks(3);
+        mine(node0, 3);
 
         info!("Pool should be empty");
         assert!(node0
@@ -31,12 +31,12 @@ impl Spec for PoolReconcile {
             .is_some());
 
         info!("Generate 5 blocks on node1");
-        node1.generate_blocks(20);
+        mine(node1, 20);
 
         info!("Connect node0 to node1");
         node0.connect(node1);
 
-        net.waiting_for_sync(20);
+        waiting_for_sync(nodes);
 
         info!("Tx should be re-added to node0's pool");
         assert!(node0

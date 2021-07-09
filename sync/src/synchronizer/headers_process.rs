@@ -1,13 +1,15 @@
 use crate::block_status::BlockStatus;
 use crate::synchronizer::Synchronizer;
 use crate::types::{ActiveChain, SyncShared};
-use crate::{Status, StatusCode, MAX_HEADERS_LEN};
+use crate::{Status, StatusCode};
+use ckb_constant::sync::MAX_HEADERS_LEN;
 use ckb_error::Error;
 use ckb_logger::{debug, log_enabled, warn, Level};
 use ckb_network::{CKBProtocolContext, PeerIndex};
-use ckb_traits::{BlockMedianTimeContext, HeaderProvider};
+use ckb_traits::HeaderProvider;
 use ckb_types::{core, packed, prelude::*};
-use ckb_verification::{HeaderError, HeaderResolver, HeaderVerifier, Verifier};
+use ckb_verification::{HeaderError, HeaderVerifier};
+use ckb_verification_traits::Verifier;
 
 pub struct HeadersProcess<'a> {
     message: packed::SendHeadersReader<'a>,
@@ -15,58 +17,6 @@ pub struct HeadersProcess<'a> {
     peer: PeerIndex,
     nc: &'a dyn CKBProtocolContext,
     active_chain: ActiveChain,
-}
-
-pub struct VerifierResolver<'a> {
-    shared: &'a SyncShared,
-    header: &'a core::HeaderView,
-    parent: Option<&'a core::HeaderView>,
-}
-
-impl<'a> VerifierResolver<'a> {
-    pub fn new(
-        parent: Option<&'a core::HeaderView>,
-        header: &'a core::HeaderView,
-        shared: &'a SyncShared,
-    ) -> Self {
-        VerifierResolver {
-            parent,
-            header,
-            shared,
-        }
-    }
-}
-
-impl<'a> ::std::clone::Clone for VerifierResolver<'a> {
-    fn clone(&self) -> Self {
-        VerifierResolver {
-            parent: self.parent,
-            header: self.header,
-            shared: self.shared,
-        }
-    }
-}
-
-impl<'a> BlockMedianTimeContext for VerifierResolver<'a> {
-    fn median_block_count(&self) -> u64 {
-        self.shared.consensus().median_time_block_count() as u64
-    }
-}
-
-impl<'a> HeaderProvider for VerifierResolver<'a> {
-    fn get_header(&self, hash: &packed::Byte32) -> Option<core::HeaderView> {
-        self.shared.get_header(hash)
-    }
-}
-
-impl<'a> HeaderResolver for VerifierResolver<'a> {
-    fn header(&self) -> &core::HeaderView {
-        self.header
-    }
-
-    fn parent(&self) -> Option<&core::HeaderView> {
-        self.parent
-    }
 }
 
 impl<'a> HeadersProcess<'a> {
@@ -103,17 +53,9 @@ impl<'a> HeadersProcess<'a> {
     }
 
     pub fn accept_first(&self, first: &core::HeaderView) -> ValidationResult {
-        let shared = self.synchronizer.shared();
-        let parent = shared.get_header(&first.data().raw().parent_hash());
-        let resolver = VerifierResolver::new(parent.as_ref(), &first, &shared);
-        let verifier = HeaderVerifier::new(&resolver, &shared.consensus());
-        let acceptor = HeaderAcceptor::new(
-            first,
-            self.peer,
-            resolver.clone(),
-            verifier,
-            self.active_chain.clone(),
-        );
+        let shared: &SyncShared = self.synchronizer.shared();
+        let verifier = HeaderVerifier::new(shared, &shared.consensus());
+        let acceptor = HeaderAcceptor::new(first, self.peer, verifier, self.active_chain.clone());
         acceptor.accept()
     }
 
@@ -150,7 +92,8 @@ impl<'a> HeadersProcess<'a> {
 
     pub fn execute(self) -> Status {
         debug!("HeadersProcess begin");
-        let shared = self.synchronizer.shared();
+        let shared: &SyncShared = self.synchronizer.shared();
+        let consensus = shared.consensus();
         let headers = self
             .message
             .headers()
@@ -160,9 +103,8 @@ impl<'a> HeadersProcess<'a> {
             .collect::<Vec<_>>();
 
         if headers.len() > MAX_HEADERS_LEN {
-            shared.state().misbehavior(self.peer, 20);
-            warn!("HeadersProcess is_oversize");
-            return Status::ok();
+            warn!("HeadersProcess is oversize");
+            return StatusCode::HeadersIsInvalid.with_context("oversize");
         }
 
         if headers.is_empty() {
@@ -179,44 +121,57 @@ impl<'a> HeadersProcess<'a> {
         }
 
         if !self.is_continuous(&headers) {
-            shared.state().misbehavior(self.peer, 20);
-            debug!("HeadersProcess is not continuous");
-            return Status::ok();
+            warn!("HeadersProcess is not continuous");
+            return StatusCode::HeadersIsInvalid.with_context("not continuous");
         }
 
         let result = self.accept_first(&headers[0]);
-        if !result.is_valid() {
-            if result.misbehavior > 0 {
-                shared.state().misbehavior(self.peer, result.misbehavior);
-            }
-            debug!(
-                "HeadersProcess accept_first is_valid {:?} headers = {:?}",
-                result, headers[0]
-            );
-            return Status::ok();
-        }
-
-        for window in headers.windows(2) {
-            if let [parent, header] = &window {
-                let resolver = VerifierResolver::new(Some(&parent), &header, &shared);
-                let verifier = HeaderVerifier::new(&resolver, &shared.consensus());
-                let acceptor = HeaderAcceptor::new(
-                    &header,
-                    self.peer,
-                    resolver.clone(),
-                    verifier,
-                    self.active_chain.clone(),
+        match result.state {
+            ValidationState::Invalid => {
+                debug!(
+                    "HeadersProcess accept_first result is invalid, error = {:?}, first header = {:?}",
+                    result.error, headers[0]
                 );
-                let result = acceptor.accept();
+                return StatusCode::HeadersIsInvalid
+                    .with_context(format!("accept first header {:?}", headers[0]));
+            }
+            ValidationState::TemporaryInvalid => {
+                debug!(
+                    "HeadersProcess accept_first result is temporary invalid, first header = {:?}",
+                    headers[0]
+                );
+                return Status::ok();
+            }
+            ValidationState::Valid => {
+                // Valid, do nothing
+            }
+        };
 
-                if !result.is_valid() {
-                    if result.misbehavior > 0 {
-                        shared.state().misbehavior(self.peer, result.misbehavior);
-                    }
-                    debug!("HeadersProcess accept is invalid {:?}", result);
+        for header in headers.iter().skip(1) {
+            let verifier = HeaderVerifier::new(shared, consensus);
+            let acceptor =
+                HeaderAcceptor::new(&header, self.peer, verifier, self.active_chain.clone());
+            let result = acceptor.accept();
+            match result.state {
+                ValidationState::Invalid => {
+                    debug!(
+                        "HeadersProcess accept result is invalid, error = {:?}, header = {:?}",
+                        result.error, headers,
+                    );
+                    return StatusCode::HeadersIsInvalid
+                        .with_context(format!("accept header {:?}", header));
+                }
+                ValidationState::TemporaryInvalid => {
+                    debug!(
+                        "HeadersProcess accept result is temporary invalid, header = {:?}",
+                        header
+                    );
                     return Status::ok();
                 }
-            }
+                ValidationState::Valid => {
+                    // Valid, do nothing
+                }
+            };
         }
 
         self.debug();
@@ -254,30 +209,23 @@ impl<'a> HeadersProcess<'a> {
     }
 }
 
-#[derive(Clone)]
-pub struct HeaderAcceptor<'a, V: Verifier> {
+pub struct HeaderAcceptor<'a, DL: HeaderProvider> {
     header: &'a core::HeaderView,
     active_chain: ActiveChain,
     peer: PeerIndex,
-    resolver: V::Target,
-    verifier: V,
+    verifier: HeaderVerifier<'a, DL>,
 }
 
-impl<'a, V> HeaderAcceptor<'a, V>
-where
-    V: Verifier<Target = VerifierResolver<'a>>,
-{
+impl<'a, DL: HeaderProvider> HeaderAcceptor<'a, DL> {
     pub fn new(
         header: &'a core::HeaderView,
         peer: PeerIndex,
-        resolver: VerifierResolver<'a>,
-        verifier: V,
+        verifier: HeaderVerifier<'a, DL>,
         active_chain: ActiveChain,
     ) -> Self {
         HeaderAcceptor {
             header,
             peer,
-            resolver,
             verifier,
             active_chain,
         }
@@ -288,14 +236,14 @@ where
             &self.header.data().raw().parent_hash(),
             BlockStatus::BLOCK_INVALID,
         ) {
-            state.dos(Some(ValidationError::InvalidParent), 100);
+            state.invalid(Some(ValidationError::InvalidParent));
             return Err(());
         }
         Ok(())
     }
 
     pub fn non_contextual_check(&self, state: &mut ValidationResult) -> Result<(), bool> {
-        self.verifier.verify(&self.resolver).map_err(|error| {
+        self.verifier.verify(self.header).map_err(|error| {
             debug!(
                 "HeadersProcess accept {:?} error {:?}",
                 self.header.number(),
@@ -307,11 +255,11 @@ where
                     state.temporary_invalid(Some(ValidationError::Verify(error)));
                     false
                 } else {
-                    state.dos(Some(ValidationError::Verify(error)), 100);
+                    state.invalid(Some(ValidationError::Verify(error)));
                     true
                 }
             } else {
-                state.dos(Some(ValidationError::Verify(error)), 100);
+                state.invalid(Some(ValidationError::Verify(error)));
                 true
             }
         })
@@ -407,27 +355,17 @@ pub enum ValidationError {
 #[derive(Debug, Default)]
 pub struct ValidationResult {
     pub error: Option<ValidationError>,
-    pub misbehavior: u32,
     pub state: ValidationState,
 }
 
 impl ValidationResult {
     pub fn invalid(&mut self, error: Option<ValidationError>) {
-        self.dos(error, 0);
-    }
-
-    pub fn dos(&mut self, error: Option<ValidationError>, misbehavior: u32) {
         self.error = error;
-        self.misbehavior += misbehavior;
         self.state = ValidationState::Invalid;
     }
 
     pub fn temporary_invalid(&mut self, error: Option<ValidationError>) {
         self.error = error;
         self.state = ValidationState::TemporaryInvalid;
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.state == ValidationState::Valid
     }
 }

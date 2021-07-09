@@ -1,3 +1,309 @@
+# [v0.43.0](https://github.com/nervosnetwork/ckb/compare/v0.42.0...v0.43.0) (2021-06-21)
+
+### Features
+
+* #2663: Try to increase file descriptor soft limit (@zhangsoledad)
+* #2647: Sort txs in pool by indirect dep (@zhangsoledad)
+* #2746: Update tx-pool for reorg synchronously (@zhangsoledad)
+
+### Bug Fixes
+
+* #2655: Don't remove peer id on addr (@driftluo)
+
+    if no peer id on addr, it will always output an error log when trying to dial the observed addr.
+
+* #2716: Fix cycles set wrong (@driftluo)
+
+### Improvements
+
+* #2665: Add CPU requirements in platform support (@doitian)
+* #2662: Shortcut return proposal reward when `target_proposals` is empty (@quake)
+
+    This PR will reduce the rocksdb query especially `get_block_txs_hashes` in the `committed_idx_proc`, which is a slow query according to profiler result.
+
+* #2691: Skip fresh proposal id checking in TransactionHashes message (@quake)
+* #2748: Upgrade rocksdb (@zhangsoledad)
+
+
+# [v0.42.0](https://github.com/nervosnetwork/ckb/compare/v0.41.0...v0.42.0) (2021-05-25)
+
+### Features
+
+* #2633: Make reuse port configurable (@driftluo)
+* #2635: Remove deprecated rpc `get_peers_state` (@quake)
+* #2628: Fix download scheduler (@driftluo)
+
+    1. disable penalty when download nodes are scarce
+    2. allow the protection node to be disconnected due to sync judgment
+
+### Bug Fixes
+
+* #2620: The arc of timestamp in tx-pool controller become incorrect after clean (@yangby-cryptape)
+
+* #2629: Readonly for migrate check (@zhangsoledad)
+
+    * Perform migration check with read-only mode to prevent automatically create columns breaking compatibility
+    * Fix the error message is displayed incorrectly while performing the migration
+
+### Improvements
+
+* #2603: Split contextual block verification to a new crate (@quake)
+
+    This PR split contextual block verification to a new crate, eliminates verification crate dependency on `ckb_store`, and simplifies code: `BlockMedianTimeContext`, `HeaderResolverWrapper` and `VerifierResolver` are removed.
+
+* #2613: Introduce launcher (@zhangsoledad)
+
+    This PR mainly simplified the launch code.
+
+* #2634: Rewrite tx-pool (@zhangsoledad)
+
+    The existing tx-pool code has many potential issues, the PR focus those issue fix.
+
+* #2640: Replace `get_cellbase_output_capacity_details` with `get_block_economic_state` in test (@keroro520)
+
+# [v0.41.0](https://github.com/nervosnetwork/ckb/compare/v0.40.0...v0.41.0) (2021-04-13)
+
+### Features
+
+* #2503: Customize chain spec for dev chains and update few preset params (@yangby-cryptape)
+
+    - Set `permanent_difficulty_in_dummy` to `true` as default for dev chains.
+    - Allow users to create different dev chains by customizing genesis message.
+      And they could also create same chain in different directories or machines by setting a same genesis message.
+    - Allow users to create different dev chains by customizing genesis timestamp.
+      If no timestamp is provided, use current timestamp.
+    - Display genesis hash after CKB direcotry created.
+
+* #2571: Request the approval for database migrations (@yangby-cryptape)
+* #2604: Allow miner http basic authorization (@driftluo)
+* #2569: Add rpc `generate_block_with_template` to IntegrationTest rpc module (@quake)
+
+    This PR adds `generate_block_with_template` rpc, so that dApps can get block template from `get_block_template` rpc, and then add or remove tx / proposal / uncle data in block template, and finally submit it via this rpc to control the newly generated block data.
+
+### Bug Fixes
+
+* #2556: Resolve peer store dump issue (@quake)
+
+### Improvements
+
+* #2525: Manually trigger compaction after freeze (@zhangsoledad)
+
+    * **Drawbacks**: Even we use `DeleteRange` apply to delete the range of keys, seems Rocksdb still hasn't implemented the feature of using seek() to skip until the end of range delete end yet.
+    Rocksdb iter seek slows down dramatically when there are many deletes.
+    * **Workaround**: Manually call `CompactRange()` for the range to delete,  this approach can solve the problem.
+
+* #2595: Set `prepare_for_bulk_load` option for migration (@zhangsoledad)
+* #2611: Smaller block status map during IBD (@yangby-cryptape)
+
+# [v0.40.0](https://github.com/nervosnetwork/ckb/compare/v0.39.0...v0.40.0) (2021-02-23)
+
+### Features
+
+* #2501: chore: remove deprecated RPC and add `deprecated` to some RPC.
+
+    Resolve #2487
+
+* #2297: Chain freezer (@zhangsoledad)
+
+    Introduce chain freezer, Inspired by  [[Splitting the data directory]](https://en.bitcoin.it/wiki/Splitting_the_data_directory) and [[geth-v1-9-0]](https://blog.ethereum.org/2019/07/10/geth-v1-9-0/#freezer)
+
+    Now, separated database into two parts, recent block and ancient history. If your data directory is located on a magnetic disk, you can link db to an SSD drive to improve performance. If your data directory is on an SSD: you can link ancient to an HDD drive to save space.
+
+    Freezer is disabled by default. It has some performance bottlenecks that we are fixing.
+
+* #2365: Tx pool callback (@zhangsoledad)
+* #2505: Provide `--overwrite-spec` to override the chain spec in storage (@keroro520)
+* #2526: Multi thread `number_hash_mapping` migration (@zhangsoledad)
+* #2520: Add RPC `get_block_median_time` (@keroro520)
+
+### Bug Fixes
+
+* #2455: Relay and sync should be order independent (@yangby-cryptape)
+
+    Fix #2450.
+
+* #2484: Don't do sync before sync connected (@yangby-cryptape)
+
+    This issue was introduced since #2455.
+
+* #2458: Fix potential failure in integration test TransactionRelayLowFeeRate (@yangby-cryptape)
+* #2454: Fix the log output of integration tests and output more logs (@yangby-cryptape)
+* #2502: Skip RUSTSEC-2020-0095 temporarily (@yangby-cryptape)
+* #2521: Fix wasm build by locking tempfile (@doitian)
+* #2523: Network should work without enabling the module in RPC (@yangby-cryptape)
+* #2537: Allow dail self (@driftluo)
+
+### Improvements
+
+* #2542: Resolve rocksdb cache size issue when using `default.db-options` (@quake)
+* #2519: Make median_time clear in RPC doc (@doitian)
+
+# [v0.39.0](https://github.com/nervosnetwork/ckb/compare/v0.38.1...v0.39.0) (2020-12-21)
+
+### Features
+
+* #2382: Permit load cell data from memory (@zhangsoledad)
+* #2343: Add RPC `get_raw_tx_pool` (@zhangsoledad)
+* #2347: Add RPC to get consensus parameters (@zhangsoledad)
+* #2280: Add assume valid target config (@driftluo)
+
+    Added option to skip verification for faster synchronization of trusted node data to a specified height
+
+    **Please know exactly what you are doing before you use it!**
+
+* #2351: Add `with_sentry` feature (@quake)
+
+    Move sentry to optional dependency, reduce dependency libs on other target (wasm32, etc)
+
+* #2334: Migrate check (@zhangsoledad)
+
+    Add command `ckb migrate --check`. If migration is in need 0 will be return，otherwise 64.
+
+* #2379: Let the consensus params `orphan_rate_target` to be configurable (@yangby-cryptape)
+
+### Bug Fixes
+
+* #2394: Some crates invalidly assumes the memory layout of `std::net::SocketAddr` (@yangby-cryptape)
+* #2389: Upgrade CKB VM to fix memmap security warning (@xxuejie)
+* #2387: Skip RUSTSEC-2020-0077 temporarily (@yangby-cryptape)
+* #2392: Skip RUSTSEC-2020-0082 temporarily since not affected (@yangby-cryptape)
+* #2350: The description for the low fee rate error (@yangby-cryptape)
+
+    The first parameter is the minimum transaction fee, not the fee rate.
+
+* #2357: Conflict transaction stuck in tx-pool (@zhangsoledad)
+* #2390: Don't open db when disable indexer module, fix deprecated method response (@driftluo)
+
+### Improvements
+
+* #2386: Replace `failure` by `thiserror` and `anyhow` (@yangby-cryptape)
+
+    [RUSTSEC-2020-0036: `failure`: `failure` is officially deprecated/unmaintained](https://rustsec.org/advisories/RUSTSEC-2020-0036.html)
+
+* #2373: Single instance async runtime (@zhangsoledad)
+
+    This PR brings several refactorings. All async processes now use one single instance runtime. It makes ckb-network work as a usually library and decoupled from the runtime.
+
+* #2271: Add some mining utils (@keroro520)
+* #2277: Add some utils to generate spendable cells (@keroro520)
+* #2342 **doc:** Add some missing docs (@zhangsoledad)
+* #2369 **doc:** Network doc (@driftluo)
+
+# [v0.38.1](https://github.com/nervosnetwork/ckb/compare/v0.38.0...v0.38.1) (2020-12-02)
+
+### Bug Fixes
+
+* #2357: Conflict transaction stuck in the tx pool (@zhangsoledad)
+
+# [v0.38.0](https://github.com/nervosnetwork/ckb/compare/v0.37.0...v0.38.0) (2020-11-18)
+
+### Features
+
+* #2329: Configurable block proposals limit (@zhangsoledad)
+* #2330: Migrate subcommand (@zhangsoledad)
+
+### Bug Fixes
+
+* #2328: Fix u256 rpc doc (@doitian)
+
+### Improvements
+
+* #2312: Use cargo-deny to replace cargo-audit (@yangby-cryptape)
+
+# [v0.37.0](https://github.com/nervosnetwork/ckb/compare/v0.36.0...v0.37.0) (2020-10-20)
+
+### Features
+
+* #2270 **rpc:** Rework rpc doc (@doitian)
+* #2299: Add a default RocksDB options file (@yangby-cryptape)
+
+    The default options file limits the maximum memory usage.
+
+* #2276: Improve migration progress display (@zhangsoledad)
+* #2257 **rpc:** Add `ping_peers` rpc (@quake)
+* #2260 **rpc:** Add `get_transaction_proof` and `verify_transaction_proof` rpc (@quake)
+* #2259 **rpc:** Add `clear_banned_addresses` rpc (@quake)
+* #2265 **rpc:** Add `nMinimumChainWork` config (@driftluo)
+
+    The mainnet has been online for a long time, and it is time to add a minimum workload proof to prevent possible node attacks during the initial synchronization.
+
+* #2269: Redesign cell store (@zhangsoledad)
+
+    Previous cell storage is inefficient. This PR proposal a new live cell storage schema, which optimized the resolve transaction bottleneck.
+
+    Breaking Changes:
+
+    * This PR will migrate the database.
+    * The RPC `get_cells_by_lock_hash` is deprecated and now it only returns errors.
+
+* #2281 **rpc:** Add tx subscription RPC (@quake)
+
+    This PR added a `new_transaction` topic to subscription rpc, user will get notified when new transaction is submitted to pool.
+
+### Bug Fixes
+
+* #2285: Fix the problem of disconnection caused by uncertainty (@driftluo)
+* #2283: Resolve network background service cleanup issue when rpc tcp server is on (@quake)
+* #2298: Skip RUSTSEC-2020-0043 temporarily (@yangby-cryptape)
+
+### Improvements
+
+* #2236: Rewrite discovery (@driftluo)
+* #2303: Replace legacy crate `lru-cache` (@zhangsoledad)
+* #2282 **test:** Create log monitor for integration test check status between nodes (@chuijiaolianying)
+* #2286 **test:** Redesign the testing framework (@keroro520)
+* #2294 **test:** Redesign the way of Net communicate with peers (@keroro520)
+* #2268 **test:** Add some transaction checking utils (@keroro520)
+
+# [v0.36.0](https://github.com/nervosnetwork/ckb/compare/v0.35.0...v0.36.0) (2020-09-21)
+
+### Breaking Changes
+
+* #2251 **RPC:** Deprecated RPC method by adding `deprecated.` prefix to the rpc name (@quake)
+
+    This PR has also deprecated following RPC methods:
+
+    * `get_cells_by_lock_hash`
+    * All methods in the Indexer module.
+
+### Features
+
+* #2276: Improve database migration progress display (@zhangsoledad)
+* #2199: Add metrics service (@yangby-cryptape)
+
+    [How to enable the metrics service](https://github.com/nervosnetwork/ckb/blob/0db57dafaad73efbfcf5330ec289efba94fd6975/util/metrics-config/src/lib.rs#L5-L22)
+
+* #2243: Refactor identify network protocol by removing `Both` (@driftluo)
+* #2239: Support to control memory usage for header map (@yangby-cryptape)
+* #2248: Add verbosity param to chain related rpc (@quake)
+
+    This PR adds an optional `verbosity ` param to chain related rpc, returns data in hex format without calculated hash values, it will improve performance in some scenarios.
+
+### Bug Fixes
+
+* #2283: Resolve network background service cleanup issue when rpc tcp server is on. (@quake)
+* #2266: Use forked metrics and forked sentry to fix RUSTSEC-2020-0041 temporarily (@yangby-cryptape)
+* #2212: Advance last_common_header even the peer is worse than us (@keroro520)
+* #2238: Tx-pool block_on async oneshot (@zhangsoledad)
+
+    Replace crossbeam-channel with async oneshot
+
+* #2216: Integration test random failures (@quake)
+
+    While waiting for the `get_blocks` message in the integration test, we should determine whether the last block hash is equal or not.
+
+### Improvements
+
+* #2220: Split logger config and service (@yangby-cryptape)
+* #2213: Reduce useless field and reduce get time call (@driftluo)
+* #2245 **logger:** Replace lazy_static with once_cell (@zhangsoledad)
+* #2229: Rewrite the ping network protocol (@driftluo)
+* #2244: Re-export crossbeam-channel (@zhangsoledad)
+
+    Re-export crossbeam-channel from facade wrapper, unify version specify.
+
+    Use tilde requirements specify for crossbeam-channel, prevent automate dependency updates.
+
 # [v0.35.0](https://github.com/nervosnetwork/ckb/compare/v0.34.2...v0.35.0) (2020-08-24)
 
 ### Features

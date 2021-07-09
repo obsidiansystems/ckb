@@ -1,37 +1,47 @@
 use ckb_channel::unbounded;
+use ckb_logger::{error, info, warn};
 use ckb_test::specs::*;
 use ckb_test::{
-    utils::node_log,
+    global::{self, BINARY_PATH, PORT_COUNTER, VENDOR_PATH},
     worker::{Notify, Workers},
     Spec,
 };
 use ckb_types::core::ScriptHashType;
 use ckb_util::Mutex;
 use clap::{value_t, App, Arg};
-use log::{error, info};
 use rand::{seq::SliceRandom, thread_rng};
 use std::any::Any;
 use std::cmp::min;
-use std::collections::HashMap;
 use std::env;
-use std::fs::{read_to_string, File};
+use std::fs::{self, read_to_string, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum TestResultStatus {
+    Passed,
+    Failed,
+    Panicked,
+}
+
+struct TestResult {
+    spec_name: String,
+    status: TestResultStatus,
+    duration: u64,
+}
 
 #[allow(clippy::cognitive_complexity)]
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
-    let _ = {
-        let filter = env::var("CKB_LOG").unwrap_or_else(|_| "info".to_string());
-        env_logger::builder().parse_filters(&filter).try_init()
-    };
 
     let clap_app = clap_app();
     let matches = clap_app.get_matches();
 
-    let binary = matches.value_of("binary").unwrap();
+    let binary = value_t!(matches, "binary", PathBuf).unwrap();
     let start_port = value_t!(matches, "port", u16).unwrap_or_else(|err| err.exit());
     let spec_names_to_run: Vec<_> = matches.values_of("specs").unwrap_or_default().collect();
     let max_time = if matches.is_present("max-time") {
@@ -40,17 +50,56 @@ fn main() {
         0
     };
     let worker_count = value_t!(matches, "concurrent", usize).unwrap_or_else(|err| err.exit());
-    let vendor = value_t!(matches, "vendor", PathBuf).unwrap_or_else(|_| current_dir());
+    let vendor =
+        value_t!(matches, "vendor", PathBuf).unwrap_or_else(|_| current_dir().join("vendor"));
+    let log_file_opt = matches
+        .value_of("log-file")
+        .map(PathBuf::from_str)
+        .transpose()
+        .unwrap_or_else(|err| panic!("failed to parse the log file path since {}", err));
     let fail_fast = !matches.is_present("no-fail-fast");
-    let quiet = matches.is_present("quiet");
+    let report = !matches.is_present("no-report");
+    let clean_tmp = !matches.is_present("keep-tmp-data");
+    let verbose = matches.is_present("verbose");
+
+    let logger_guard = {
+        let filter = if !verbose {
+            env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())
+        } else {
+            format!(
+                "{},{}=trace",
+                env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+                module_path!(),
+            )
+        };
+        let mut logger_config = ckb_logger_config::Config {
+            filter: Some(filter),
+            ..Default::default()
+        };
+        if let Some(log_file) = log_file_opt {
+            if log_file.is_relative() {
+                logger_config.log_dir = current_dir();
+            }
+            logger_config.file = log_file;
+            logger_config.log_to_file = true;
+        } else {
+            logger_config.log_to_file = false;
+        }
+        ckb_logger_service::init(None, logger_config)
+            .unwrap_or_else(|err| panic!("failed to init the logger service since {}", err))
+    };
 
     if matches.is_present("list-specs") {
         list_specs();
         return;
     }
 
-    info!("binary: {}", binary);
-    info!("start port: {}", start_port);
+    *BINARY_PATH.lock() = binary;
+    *VENDOR_PATH.lock() = vendor;
+    PORT_COUNTER.store(start_port, Ordering::SeqCst);
+    info!("binary: {}", global::binary().to_string_lossy());
+    info!("vendor dir: {}", global::vendor().to_string_lossy());
+    info!("start port: {}", PORT_COUNTER.load(Ordering::SeqCst));
     info!("max time: {:?}", max_time);
 
     let specs = filter_specs(all_specs(), spec_names_to_run);
@@ -64,17 +113,11 @@ fn main() {
     let (notify_tx, notify_rx) = unbounded();
 
     info!("start {} workers...", worker_count);
-    let mut workers = Workers::new(
-        worker_count,
-        Arc::clone(&specs),
-        notify_tx,
-        start_port,
-        binary.to_string(),
-        vendor,
-    );
+    let mut workers = Workers::new(worker_count, Arc::clone(&specs), notify_tx, start_port);
     workers.start();
 
     let mut rerun_specs = Vec::new();
+    let mut test_results = Vec::new();
     let mut worker_running = worker_count;
     let mut done_specs = 0;
     while worker_running > 0 {
@@ -89,7 +132,7 @@ fn main() {
                 if err.is_timeout() {
                     continue;
                 }
-                panic!(err);
+                std::panic::panic_any(err);
             }
         };
         match msg {
@@ -99,8 +142,14 @@ fn main() {
             Notify::Error {
                 spec_error,
                 spec_name,
-                node_dirs,
+                seconds,
+                node_log_paths,
             } => {
+                test_results.push(TestResult {
+                    spec_name: spec_name.clone(),
+                    status: TestResultStatus::Failed,
+                    duration: seconds,
+                });
                 error_spec_names.push(spec_name.clone());
                 rerun_specs.push(spec_name.clone());
                 if fail_fast {
@@ -108,15 +157,21 @@ fn main() {
                     worker_running -= 1;
                 }
                 spec_errors.push(Some(spec_error));
-                if !quiet {
+                if verbose {
                     info!("[{}] Error", spec_name);
-                    tail_node_logs(node_dirs);
+                    tail_node_logs(&node_log_paths);
                 }
             }
             Notify::Panick {
                 spec_name,
-                node_dirs,
+                seconds,
+                node_log_paths,
             } => {
+                test_results.push(TestResult {
+                    spec_name: spec_name.clone(),
+                    status: TestResultStatus::Panicked,
+                    duration: seconds,
+                });
                 error_spec_names.push(spec_name.clone());
                 rerun_specs.push(spec_name.clone());
                 if fail_fast {
@@ -124,17 +179,33 @@ fn main() {
                     worker_running -= 1;
                 }
                 spec_errors.push(None);
-                if !quiet {
+                if verbose {
                     info!("[{}] Panic", spec_name);
-                    print_panicked_logs(&node_dirs);
+                    print_panicked_logs(&node_log_paths);
                 }
             }
-            Notify::Done { spec_name, seconds } => {
+            Notify::Done {
+                spec_name,
+                seconds,
+                node_paths,
+            } => {
+                test_results.push(TestResult {
+                    spec_name: spec_name.clone(),
+                    status: TestResultStatus::Passed,
+                    duration: seconds,
+                });
                 done_specs += 1;
                 info!(
                     "{}/{} .............. [{}] Done in {} seconds",
                     done_specs, total, spec_name, seconds
                 );
+                if clean_tmp {
+                    for path in node_paths {
+                        if let Err(err) = fs::remove_dir_all(&path) {
+                            warn!("failed to remove directory [{:?}] since {}", path, err);
+                        }
+                    }
+                }
             }
             Notify::Stop => {
                 worker_running -= 1;
@@ -152,9 +223,12 @@ fn main() {
         );
     }
 
-    info!("Total elapsed time: {:?}", start_time.elapsed());
+    if report {
+        print_results(test_results);
+        println!("Total elapsed time: {:?}", start_time.elapsed());
+    }
 
-    rerun_specs.extend(specs.lock().iter().map(|t| t.0.clone()));
+    rerun_specs.extend(specs.lock().iter().map(|t| t.name().to_string()));
 
     if rerun_specs.is_empty() {
         return;
@@ -172,7 +246,7 @@ fn main() {
     info!(
         "{} --bin {} --port {} {}",
         canonicalize_path(env::args().next().unwrap_or_else(|| "ckb-test".to_string())).display(),
-        canonicalize_path(binary).display(),
+        canonicalize_path(global::binary()).display(),
         start_port,
         rerun_specs.join(" "),
     );
@@ -180,10 +254,9 @@ fn main() {
     if !spec_errors.is_empty() {
         std::process::exit(1);
     }
-}
 
-type SpecMap = HashMap<&'static str, Box<dyn Spec + Send>>;
-type SpecTuple = (String, Box<dyn Spec + Send>);
+    drop(logger_guard);
+}
 
 fn clap_app() -> App<'static, 'static> {
     App::new("ckb-test")
@@ -222,44 +295,52 @@ fn clap_app() -> App<'static, 'static> {
                 .default_value("4"),
         )
         .arg(
-            Arg::with_name("quiet")
-                .long("quiet")
-                .help("Use less output"),
+            Arg::with_name("verbose")
+                .long("verbose")
+                .help("Show verbose log"),
         )
         .arg(
             Arg::with_name("no-fail-fast")
                 .long("no-fail-fast")
                 .help("Run all tests regardless of failure"),
         )
+        .arg(
+            Arg::with_name("no-report")
+                .long("no-report")
+                .help("Do not show integration test report"),
+        )
+        .arg(
+            Arg::with_name("log-file")
+                .long("log-file")
+                .takes_value(true)
+                .help("Write log outputs into file."),
+        )
+        .arg(Arg::with_name("keep-tmp-data").long("keep-tmp-data").help(
+            "Keep all temporary files. Default: only keep temporary file for the failed tests.",
+        ))
 }
 
-fn filter_specs(mut all_specs: SpecMap, spec_names_to_run: Vec<&str>) -> Vec<SpecTuple> {
+fn filter_specs(
+    mut all_specs: Vec<Box<dyn Spec>>,
+    spec_names_to_run: Vec<&str>,
+) -> Vec<Box<dyn Spec>> {
     if spec_names_to_run.is_empty() {
-        let mut specs: Vec<_> = all_specs
-            .into_iter()
-            .map(|(spec_name, spec)| (spec_name.to_string(), spec))
-            .collect();
-        specs.shuffle(&mut thread_rng());
-        specs
-    } else {
-        let mut specs = Vec::with_capacity(spec_names_to_run.len());
-        for spec_name in spec_names_to_run {
-            specs.push((
-                spec_name.to_string(),
-                all_specs.remove(spec_name).unwrap_or_else(|| {
-                    eprintln!("Unknown spec {}", spec_name);
-                    std::process::exit(1);
-                }),
-            ));
-        }
-        specs
+        return all_specs;
     }
+
+    for name in spec_names_to_run.iter() {
+        if !all_specs.iter().any(|spec| spec.name() == *name) {
+            eprintln!("Unknown spec {}", name);
+            std::process::exit(1);
+        }
+    }
+
+    all_specs.retain(|spec| spec_names_to_run.contains(&spec.name()));
+    all_specs
 }
 
 fn current_dir() -> PathBuf {
-    env::current_dir()
-        .expect("can't get current_dir")
-        .join("vendor")
+    env::current_dir().expect("can't get current_dir")
 }
 
 fn canonicalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
@@ -268,9 +349,8 @@ fn canonicalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
         .unwrap_or_else(|_| path.as_ref().to_path_buf())
 }
 
-fn all_specs() -> SpecMap {
-    let specs: Vec<Box<dyn Spec + Send>> = vec![
-        Box::new(BlockRelayBasic),
+fn all_specs() -> Vec<Box<dyn Spec>> {
+    let mut specs: Vec<Box<dyn Spec>> = vec![
         Box::new(BlockSyncFromOne),
         Box::new(BlockSyncForks),
         Box::new(BlockSyncDuplicatedAndReconnect),
@@ -321,7 +401,7 @@ fn all_specs() -> SpecMap {
         Box::new(SendLargeCyclesTxInBlock::new()),
         Box::new(SendLargeCyclesTxToRelay::new()),
         Box::new(TxsRelayOrder),
-        Box::new(SendArrowTxs),
+        Box::new(SendTxChain),
         Box::new(DifferentTxsWithSameInput),
         Box::new(CompactBlockEmpty),
         Box::new(CompactBlockEmptyParentUnknown),
@@ -360,8 +440,6 @@ fn all_specs() -> SpecMap {
         )),
         Box::new(CheckTypical2In2OutTx::default()),
         Box::new(AlertPropagation::default()),
-        Box::new(IndexerBasic),
-        Box::new(GenesisIssuedCells),
         // TODO These cases will fail occasionally because of some unknown
         // asynchronous issues.
         Box::new(IBDProcess),
@@ -396,29 +474,40 @@ fn all_specs() -> SpecMap {
         Box::new(AvoidDuplicatedProposalsWithUncles),
         Box::new(TemplateTxSelect),
         Box::new(BlockSyncRelayerCollaboration),
+        Box::new(RpcGetBlockTemplate),
+        Box::new(RpcSubmitBlock),
+        Box::new(RpcGetBlockchainInfo),
         Box::new(RpcTruncate),
+        Box::new(RpcTransactionProof),
+        Box::new(RpcGetBlockMedianTime),
         Box::new(SyncTooNewBlock),
         Box::new(RelayTooNewBlock),
         Box::new(LastCommonHeaderForPeerWithWorseChain),
+        Box::new(BlockTransactionsRelayParentOfOrphanBlock),
+        Box::new(CellBeingSpentThenCellDepInSameBlockTestSubmitBlock),
+        Box::new(CellBeingCellDepThenSpentInSameBlockTestSubmitBlock),
+        Box::new(CellBeingCellDepAndSpentInSameBlockTestGetBlockTemplate),
+        Box::new(CellBeingCellDepAndSpentInSameBlockTestGetBlockTemplateMultiple),
+        Box::new(DuplicateCellDeps),
     ];
-    specs.into_iter().map(|spec| (spec.name(), spec)).collect()
+    specs.shuffle(&mut thread_rng());
+    specs
 }
 
 fn list_specs() {
     let all_specs = all_specs();
-    let mut names: Vec<_> = all_specs.keys().collect();
-    names.sort();
+    let mut names: Vec<_> = all_specs.iter().map(|spec| spec.name()).collect();
+    names.sort_unstable();
     for spec_name in names {
         println!("{}", spec_name);
     }
 }
 
 // sed -n ${{panic_ln-300}},${{panic_ln+300}}p $node_log_path
-fn print_panicked_logs(node_dirs: &[String]) {
-    for (i, node_dir) in node_dirs.iter().enumerate() {
-        let node_log = node_log(&node_dir);
+fn print_panicked_logs(node_log_paths: &[PathBuf]) {
+    for (i, node_log) in node_log_paths.iter().enumerate() {
         let log_reader =
-            BufReader::new(File::open(&node_log).expect("failed to read node's log")).lines();
+            BufReader::new(File::open(node_log).expect("failed to read node's log")).lines();
         let panic_ln = log_reader.enumerate().find(|(_ln, line)| {
             line.as_ref()
                 .map(|line| line.contains("panicked at"))
@@ -451,15 +540,17 @@ fn print_panicked_logs(node_dirs: &[String]) {
 }
 
 // tail -n 2000 $node_log_path
-fn tail_node_logs(node_dirs: Vec<String>) {
+fn tail_node_logs(node_log_paths: &[PathBuf]) {
     let tail_n: usize = env::var("CKB_TEST_TAIL_N")
         .unwrap_or_default()
         .parse()
         .unwrap_or(2000);
+    if tail_n == 0 {
+        return;
+    }
 
-    for (i, node_dir) in node_dirs.into_iter().enumerate() {
-        let node_log = node_log(&node_dir);
-        let content = read_to_string(&node_log).expect("failed to read node's log");
+    for (i, node_log) in node_log_paths.iter().enumerate() {
+        let content = read_to_string(node_log).expect("failed to read node's log");
         let skip = content.lines().count().saturating_sub(tail_n);
 
         println!(
@@ -487,4 +578,20 @@ fn log_failed_specs(error_spec_names: &[String]) -> Result<(), io::Error> {
     }
 
     Ok(())
+}
+
+fn print_results(mut test_results: Vec<TestResult>) {
+    println!("{}", "-".repeat(20));
+    println!("{:50} | {:10} | {:10}", "TEST", "STATUS", "DURATION");
+
+    test_results.sort_by(|a, b| a.status.cmp(&b.status));
+
+    for result in test_results.iter() {
+        println!(
+            "{:50} | {:10} | {:<10}",
+            result.spec_name,
+            format!("{:?}", result.status),
+            format!("{} s", result.duration),
+        );
+    }
 }

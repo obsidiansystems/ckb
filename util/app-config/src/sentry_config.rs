@@ -1,16 +1,12 @@
 use ckb_build_info::Version;
 use sentry::{
-    configure_scope, init,
-    integrations::panic::register_panic_handler,
-    internals::{ClientInitGuard, Dsn},
-    protocol::Event,
-    ClientOptions, Level,
+    configure_scope, init, protocol::Event, types::Dsn, ClientInitGuard, ClientOptions, Level,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct SentryConfig {
     pub dsn: String,
     pub org_ident: Option<String>,
@@ -31,8 +27,6 @@ impl SentryConfig {
                     scope.set_extra("org_contact", org_contact.clone().into());
                 }
             });
-
-            register_panic_handler();
         }
 
         guard
@@ -68,8 +62,7 @@ fn before_send(mut event: Event<'static>) -> Option<Event<'static>> {
     let ex = match event
         .exception
         .values
-        .iter()
-        .next()
+        .get(0)
         .and_then(|ex| ex.value.as_ref())
     {
         Some(ex) => ex,

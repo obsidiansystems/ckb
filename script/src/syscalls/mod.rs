@@ -176,9 +176,7 @@ impl Source {
 mod tests {
     use super::*;
     use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
-    use ckb_db::RocksDB;
     use ckb_hash::blake2b_256;
-    use ckb_store::{data_loader_wrapper::DataLoaderWrapper, ChainDB, COLUMNS};
     use ckb_traits::{CellDataProvider, HeaderProvider};
     use ckb_types::{
         bytes::Bytes,
@@ -199,8 +197,29 @@ mod tests {
     use proptest::{collection::size_range, prelude::*};
     use std::collections::HashMap;
 
-    fn new_store() -> ChainDB {
-        ChainDB::new(RocksDB::open_tmp(COLUMNS), Default::default())
+    #[derive(Default, PartialEq, Eq, Clone)]
+    struct MockDataLoader {
+        headers: HashMap<Byte32, HeaderView>,
+    }
+
+    impl CellDataProvider for MockDataLoader {
+        fn get_cell_data(&self, _out_point: &OutPoint) -> Option<Bytes> {
+            None
+        }
+
+        fn get_cell_data_hash(&self, _out_point: &OutPoint) -> Option<Byte32> {
+            None
+        }
+    }
+
+    impl HeaderProvider for MockDataLoader {
+        fn get_header(&self, block_hash: &Byte32) -> Option<HeaderView> {
+            self.headers.get(block_hash).cloned()
+        }
+    }
+
+    fn new_mock_data_loader() -> MockDataLoader {
+        MockDataLoader::default()
     }
 
     fn build_cell_meta(capacity_bytes: usize, data: Bytes) -> CellMeta {
@@ -212,7 +231,8 @@ mod tests {
             transaction_info: None,
             cell_output: builder.build(),
             data_bytes: data.len() as u64,
-            mem_cell_data: Some((data, data_hash)),
+            mem_cell_data: Some(data),
+            mem_cell_data_hash: Some(data_hash),
         }
     }
 
@@ -242,7 +262,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -283,7 +305,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -372,7 +396,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -423,7 +449,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -479,14 +507,17 @@ mod tests {
             transaction_info: None,
             cell_output: CellOutput::new_builder().capacity(capacity.pack()).build(),
             data_bytes: 0,
-            mem_cell_data: Some((data, data_hash)),
+            mem_cell_data: Some(data),
+            mem_cell_data_hash: Some(data_hash),
         };
         let outputs = vec![];
         let resolved_inputs = vec![input_cell];
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -537,7 +568,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -554,22 +587,6 @@ mod tests {
 
         for addr in addr..addr + 100 {
             assert_eq!(machine.memory_mut().load8(&addr), Ok(0));
-        }
-    }
-
-    struct MockDataLoader {
-        headers: HashMap<Byte32, HeaderView>,
-    }
-
-    impl CellDataProvider for MockDataLoader {
-        fn get_cell_data(&self, _out_point: &OutPoint) -> Option<(Bytes, Byte32)> {
-            None
-        }
-    }
-
-    impl HeaderProvider for MockDataLoader {
-        fn get_header(&self, block_hash: &Byte32) -> Option<HeaderView> {
-            self.headers.get(block_hash).cloned()
         }
     }
 
@@ -871,7 +888,9 @@ mod tests {
         let resolved_cell_deps = vec![];
         let group_inputs = vec![];
         let group_outputs = vec![];
+        let data_loader = new_mock_data_loader();
         let mut load_cell = LoadCell::new(
+            &data_loader,
             &outputs,
             &resolved_inputs,
             &resolved_cell_deps,
@@ -1074,8 +1093,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data.to_owned());
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];
@@ -1131,8 +1149,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data.to_owned());
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_deps = vec![dep_cell];
@@ -1201,8 +1218,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data);
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];
@@ -1252,8 +1268,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data.to_owned());
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];
@@ -1308,8 +1323,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data.to_vec());
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];
@@ -1351,8 +1365,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data.to_vec());
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];
@@ -1397,8 +1410,7 @@ mod tests {
         let dep_cell_data = Bytes::from(data);
         let dep_cell = build_cell_meta(10000, dep_cell_data);
 
-        let store = new_store();
-        let data_loader = DataLoaderWrapper::new(&store);
+        let data_loader = new_mock_data_loader();
         let outputs = vec![];
         let resolved_inputs = vec![];
         let resolved_cell_deps = vec![dep_cell];

@@ -16,63 +16,115 @@ use ckb_metrics_config::Config as MetricsConfig;
 use ckb_resource::Resource;
 
 use super::configs::*;
+#[cfg(feature = "with_sentry")]
 use super::sentry_config::SentryConfig;
 use super::{cli, ExitCode};
 
+/// The parsed config file.
+///
+/// CKB process reads `ckb.toml` or `ckb-miner.toml`, depending what subcommand to be executed.
 pub enum AppConfig {
+    /// The parsed `ckb.toml.`
     CKB(Box<CKBAppConfig>),
+    /// The parsed `ckb-miner.toml.`
     Miner(Box<MinerAppConfig>),
 }
 
-// change the order of fields will break integration test, see module doc.
+/// The main config file for the most subcommands. Usually it is the `ckb.toml` in the CKB root
+/// directory.
+///
+/// **Attention:** Changing the order of fields will break integration test, see module doc.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CKBAppConfig {
+    /// The data directory.
     pub data_dir: PathBuf,
+    /// freezer files path
+    #[serde(default)]
+    pub ancient: PathBuf,
+    /// The directory to store temporary files.
     pub tmp_dir: Option<PathBuf>,
+    /// Logger config options.
     pub logger: LogConfig,
+    /// Sentry config options.
+    #[cfg(feature = "with_sentry")]
+    #[serde(default)]
     pub sentry: SentryConfig,
+    /// Metrics options.
+    ///
+    /// Developers can collect metrics for performance tuning and troubleshooting.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Memory tracker options.
+    ///
+    /// Developers can enable memory tracker to analyze the process memory usage.
     #[serde(default)]
     pub memory_tracker: MemoryTrackerConfig,
+    /// Chain config options.
     pub chain: ChainConfig,
 
+    /// Block assembler options.
     pub block_assembler: Option<BlockAssemblerConfig>,
+    /// Database config options.
     #[serde(default)]
     pub db: DBConfig,
-    #[serde(default)]
-    pub indexer: IndexerConfig,
+    /// Network config options.
     pub network: NetworkConfig,
+    /// RPC config options.
     pub rpc: RpcConfig,
+    /// Tx pool config options.
     pub tx_pool: TxPoolConfig,
+    /// Store config options.
     #[serde(default)]
     pub store: StoreConfig,
+    /// P2P alert config options.
     pub alert_signature: Option<NetworkAlertConfig>,
+    /// Notify config options.
     #[serde(default)]
     pub notify: NotifyConfig,
 }
 
-// change the order of fields will break integration test, see module doc.
+/// The miner config file for `ckb miner`. Usually it is the `ckb-miner.toml` in the CKB root
+/// directory.
+///
+/// **Attention:** Changing the order of fields will break integration test, see module doc.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MinerAppConfig {
+    /// The data directory.
     pub data_dir: PathBuf,
+    /// Chain config options.
     pub chain: ChainConfig,
+    /// Logger config options.
     pub logger: LogConfig,
+    /// Sentry config options.
+    #[cfg(feature = "with_sentry")]
     pub sentry: SentryConfig,
+    /// Metrics options.
+    ///
+    /// Developers can collect metrics for performance tuning and troubleshooting.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Memory tracker options.
+    ///
+    /// Developers can enable memory tracker to analyze the process memory usage.
     #[serde(default)]
     pub memory_tracker: MemoryTrackerConfig,
 
+    /// The miner config options.
     pub miner: MinerConfig,
 }
 
+/// The chain config options.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChainConfig {
+    /// Specifies the chain spec.
     pub spec: Resource,
 }
 
 impl AppConfig {
+    /// Reads the config file for the subcommand.
+    ///
+    /// This will reads the `ckb-miner.toml` in the CKB directory for `ckb miner`, and `ckb.toml`
+    /// for all other subcommands.
     pub fn load_for_subcommand<P: AsRef<Path>>(
         root_dir: P,
         subcommand_name: &str,
@@ -96,6 +148,7 @@ impl AppConfig {
         }
     }
 
+    /// Gets logger options.
     pub fn logger(&self) -> &LogConfig {
         match self {
             AppConfig::CKB(config) => &config.logger,
@@ -103,6 +156,8 @@ impl AppConfig {
         }
     }
 
+    /// Gets sentry options.
+    #[cfg(feature = "with_sentry")]
     pub fn sentry(&self) -> &SentryConfig {
         match self {
             AppConfig::CKB(config) => &config.sentry,
@@ -110,6 +165,7 @@ impl AppConfig {
         }
     }
 
+    /// Gets metrics options.
     pub fn metrics(&self) -> &MetricsConfig {
         match self {
             AppConfig::CKB(config) => &config.metrics,
@@ -117,6 +173,7 @@ impl AppConfig {
         }
     }
 
+    /// Gets memory tracker options.
     pub fn memory_tracker(&self) -> &MemoryTrackerConfig {
         match self {
             AppConfig::CKB(config) => &config.memory_tracker,
@@ -124,6 +181,7 @@ impl AppConfig {
         }
     }
 
+    /// Gets chain spec.
     pub fn chain_spec(&self) -> Result<ChainSpec, ExitCode> {
         let spec_resource = match self {
             AppConfig::CKB(config) => &config.chain.spec,
@@ -135,6 +193,9 @@ impl AppConfig {
         })
     }
 
+    /// Unpacks the parsed ckb.toml config file.
+    ///
+    /// Panics when this is a parsed ckb-miner.toml.
     pub fn into_ckb(self) -> Result<Box<CKBAppConfig>, ExitCode> {
         match self {
             AppConfig::CKB(config) => Ok(config),
@@ -145,6 +206,9 @@ impl AppConfig {
         }
     }
 
+    /// Unpacks the parsed ckb-miner.toml config file.
+    ///
+    /// Panics when this is a parsed ckb.toml.
     pub fn into_miner(self) -> Result<Box<MinerAppConfig>, ExitCode> {
         match self {
             AppConfig::Miner(config) => Ok(config),
@@ -167,12 +231,13 @@ impl AppConfig {
 
 impl CKBAppConfig {
     fn derive_options(mut self, root_dir: &Path, subcommand_name: &str) -> Result<Self, ExitCode> {
-        self.data_dir = canonicalize_data_dir(self.data_dir, root_dir)?;
+        self.data_dir = canonicalize_data_dir(self.data_dir, root_dir);
 
         self.db.adjust(root_dir, &self.data_dir, "db");
-        self.indexer
-            .db
-            .adjust(root_dir, &self.data_dir, "indexer_db");
+        self.ancient = mkdir(path_specified_or_else(&self.ancient, || {
+            self.data_dir.join("ancient")
+        }))?;
+
         self.network.path = self.data_dir.join("network");
         if self.tmp_dir.is_none() {
             self.tmp_dir = Some(self.data_dir.join("tmp"));
@@ -189,7 +254,6 @@ impl CKBAppConfig {
 
         self.data_dir = mkdir(self.data_dir)?;
         self.db.path = mkdir(self.db.path)?;
-        self.indexer.db.path = mkdir(self.indexer.db.path)?;
         self.network.path = mkdir(self.network.path)?;
         if let Some(tmp_dir) = self.tmp_dir {
             self.tmp_dir = Some(mkdir(tmp_dir)?);
@@ -206,7 +270,7 @@ impl CKBAppConfig {
 
 impl MinerAppConfig {
     fn derive_options(mut self, root_dir: &Path) -> Result<Self, ExitCode> {
-        self.data_dir = mkdir(canonicalize_data_dir(self.data_dir, root_dir)?)?;
+        self.data_dir = mkdir(canonicalize_data_dir(self.data_dir, root_dir))?;
         self.logger.log_dir = self.data_dir.join("logs");
         self.logger.file = self.logger.log_dir.join("miner.log");
         if self.logger.log_to_file {
@@ -219,14 +283,12 @@ impl MinerAppConfig {
     }
 }
 
-fn canonicalize_data_dir(data_dir: PathBuf, root_dir: &Path) -> Result<PathBuf, ExitCode> {
-    let path = if data_dir.is_absolute() {
+fn canonicalize_data_dir(data_dir: PathBuf, root_dir: &Path) -> PathBuf {
+    if data_dir.is_absolute() {
         data_dir
     } else {
         root_dir.join(data_dir)
-    };
-
-    Ok(path)
+    }
 }
 
 fn mkdir(dir: PathBuf) -> Result<PathBuf, ExitCode> {
@@ -250,6 +312,18 @@ fn ensure_ckb_dir(r: Resource) -> Result<Resource, ExitCode> {
     } else {
         eprintln!("Not a CKB directory, initialize one with `ckb init`.");
         Err(ExitCode::Config)
+    }
+}
+
+fn path_specified_or_else<P: AsRef<Path>, F: FnOnce() -> PathBuf>(
+    path: P,
+    default_path: F,
+) -> PathBuf {
+    let path_ref = path.as_ref();
+    if path_ref.to_str().is_none() || path_ref.to_str() == Some("") {
+        default_path()
+    } else {
+        path_ref.to_path_buf()
     }
 }
 
@@ -295,8 +369,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_RUN)
-                .unwrap_or_else(|err| panic!(err));
-            let ckb_config = app_config.into_ckb().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let ckb_config = app_config
+                .into_ckb()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(ckb_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 ckb_config.chain.spec,
@@ -314,8 +390,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_MINER)
-                .unwrap_or_else(|err| panic!(err));
-            let miner_config = app_config.into_miner().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let miner_config = app_config
+                .into_miner()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(miner_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 miner_config.chain.spec,
@@ -344,8 +422,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_RUN)
-                .unwrap_or_else(|err| panic!(err));
-            let ckb_config = app_config.into_ckb().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let ckb_config = app_config
+                .into_ckb()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(ckb_config.logger.log_to_file, false);
             assert_eq!(ckb_config.logger.log_to_stdout, true);
         }
@@ -354,8 +434,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_MINER)
-                .unwrap_or_else(|err| panic!(err));
-            let miner_config = app_config.into_miner().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let miner_config = app_config
+                .into_miner()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(miner_config.logger.log_to_file, false);
             assert_eq!(miner_config.logger.log_to_stdout, true);
         }
@@ -380,8 +462,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_RUN)
-                .unwrap_or_else(|err| panic!(err));
-            let ckb_config = app_config.into_ckb().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let ckb_config = app_config
+                .into_ckb()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(ckb_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 ckb_config.chain.spec,
@@ -399,8 +483,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_MINER)
-                .unwrap_or_else(|err| panic!(err));
-            let miner_config = app_config.into_miner().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let miner_config = app_config
+                .into_miner()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(miner_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 miner_config.chain.spec,
@@ -429,8 +515,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_RUN)
-                .unwrap_or_else(|err| panic!(err));
-            let ckb_config = app_config.into_ckb().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let ckb_config = app_config
+                .into_ckb()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(
                 ckb_config.chain.spec,
                 Resource::file_system(dir.path().join("specs").join("integration.toml"))
@@ -446,8 +534,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_MINER)
-                .unwrap_or_else(|err| panic!(err));
-            let miner_config = app_config.into_miner().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let miner_config = app_config
+                .into_miner()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(
                 miner_config.chain.spec,
                 Resource::file_system(dir.path().join("specs").join("integration.toml"))
@@ -476,8 +566,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_RUN)
-                .unwrap_or_else(|err| panic!(err));
-            let ckb_config = app_config.into_ckb().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let ckb_config = app_config
+                .into_ckb()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(ckb_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 ckb_config.chain.spec,
@@ -495,8 +587,10 @@ mod tests {
                 .export(&context, dir.path())
                 .expect("export config files");
             let app_config = AppConfig::load_for_subcommand(dir.path(), cli::CMD_MINER)
-                .unwrap_or_else(|err| panic!(err));
-            let miner_config = app_config.into_miner().unwrap_or_else(|err| panic!(err));
+                .unwrap_or_else(|err| std::panic::panic_any(err));
+            let miner_config = app_config
+                .into_miner()
+                .unwrap_or_else(|err| std::panic::panic_any(err));
             assert_eq!(miner_config.logger.filter, Some("info".to_string()));
             assert_eq!(
                 miner_config.chain.spec,

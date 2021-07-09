@@ -1,4 +1,5 @@
-use crate::BAD_MESSAGE_BAN_TIME;
+use crate::utils::send_message_to;
+use ckb_constant::sync::BAD_MESSAGE_BAN_TIME;
 use ckb_logger::{debug, info, warn};
 use ckb_network::{bytes::Bytes, CKBProtocolContext, CKBProtocolHandler, PeerIndex};
 use ckb_types::{packed, prelude::*};
@@ -42,7 +43,7 @@ impl NetTimeChecker {
             return None;
         }
         let mut samples = self.samples.iter().cloned().collect::<Vec<_>>();
-        samples.sort();
+        samples.sort_unstable();
         let mid = samples.len() >> 1;
         if samples.len() & 0x1 == 0 {
             // samples is even
@@ -85,6 +86,7 @@ impl Clone for NetTimeProtocol {
 }
 
 impl NetTimeProtocol {
+    /// Init time protocol
     pub fn new(min_samples: usize, max_samples: usize, tolerant_offset: u64) -> Self {
         let checker = RwLock::new(NetTimeChecker::new(
             min_samples,
@@ -115,9 +117,7 @@ impl CKBProtocolHandler for NetTimeProtocol {
         if let Some(true) = nc.get_peer(peer_index).map(|peer| peer.is_inbound()) {
             let now = faketime::unix_time_as_millis();
             let time = packed::Time::new_builder().timestamp(now.pack()).build();
-            if let Err(err) = nc.send_message_to(peer_index, time.as_bytes()) {
-                debug!("net_time_checker send message error: {:?}", err);
-            }
+            let _status = send_message_to(nc.as_ref(), peer_index, &time);
         }
     }
 

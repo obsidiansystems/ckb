@@ -1,29 +1,25 @@
+use crate::util::mining::out_ibd_mode;
 use crate::utils::wait_until;
-use crate::{Net, Spec, TestProtocol};
+use crate::{Net, Node, Spec};
+use ckb_constant::sync::MAX_LOCATOR_SIZE;
+use ckb_logger::info;
 use ckb_network::SupportProtocols;
-use ckb_sync::MAX_LOCATOR_SIZE;
 use ckb_types::{
     h256,
     packed::{Byte32, GetHeaders, SyncMessage},
     prelude::*,
     H256,
 };
-use log::info;
 
 pub struct InvalidLocatorSize;
 
 impl Spec for InvalidLocatorSize {
-    crate::name!("invalid_locator_size");
-
-    crate::setup!(protocols: vec![TestProtocol::sync()]);
-
-    fn run(&self, net: &mut Net) {
+    fn run(&self, nodes: &mut Vec<Node>) {
         info!("Connect node0");
-        net.exit_ibd_mode();
-        let node0 = &net.nodes[0];
+        out_ibd_mode(nodes);
+        let node0 = &nodes[0];
+        let mut net = Net::new(self.name(), node0.consensus(), vec![SupportProtocols::Sync]);
         net.connect(node0);
-        // get peer_id from GetHeaders message
-        let (peer_id, _, _) = net.receive();
 
         let hashes: Vec<Byte32> = (0..=MAX_LOCATOR_SIZE)
             .map(|_| h256!("0x1").pack())
@@ -38,13 +34,25 @@ impl Spec for InvalidLocatorSize {
             .build()
             .as_bytes();
 
-        net.send(SupportProtocols::Sync.protocol_id(), peer_id, message);
+        net.send(node0, SupportProtocols::Sync, message);
 
-        let rpc_client = net.nodes[0].rpc_client();
+        let rpc_client = nodes[0].rpc_client();
         let ret = wait_until(10, || rpc_client.get_peers().is_empty());
         assert!(ret, "Node0 should disconnect test node");
 
-        net.connect(node0);
+        let ret = wait_until(10, || {
+            net.controller()
+                .connected_peers()
+                .iter()
+                .find(|(_, peer)| peer.connected_addr.to_string() == node0.p2p_address())
+                .is_none()
+        });
+        assert!(
+            ret,
+            "Net should disconnect node0 because node0 already disconnect it"
+        );
+
+        net.connect_uncheck(node0);
         let ret = wait_until(10, || !rpc_client.get_peers().is_empty());
         assert!(!ret, "Node0 should ban test node");
     }

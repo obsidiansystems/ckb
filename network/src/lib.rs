@@ -1,3 +1,11 @@
+//! ckb network module
+//!
+//! This module is based on the Tentacle library, once again abstract the context that protocols can use,
+//! and providing a unified implementation of the peer storage and registration mechanism.
+//!
+//! And implemented several basic protocols: identify, discovery, ping, feeler, disconnect_message
+//!
+
 mod behaviour;
 mod compress;
 pub mod errors;
@@ -18,7 +26,7 @@ pub use crate::{
     network::{DefaultExitHandler, ExitHandler, NetworkController, NetworkService, NetworkState},
     peer::{Peer, PeerIdentifyInfo},
     peer_registry::PeerRegistry,
-    peer_store::{types::MultiaddrExt, Score},
+    peer_store::Score,
     protocols::{
         support_protocols::SupportProtocols, CKBProtocol, CKBProtocolContext, CKBProtocolHandler,
         PeerIndex,
@@ -29,8 +37,10 @@ pub use p2p::{
     secio::{PeerId, PublicKey},
     service::{BlockingFlag, ServiceControl, SessionType, TargetSession},
     traits::ServiceProtocol,
+    utils::{extract_peer_id, multiaddr_to_socketaddr},
     ProtocolId,
 };
 pub use tokio;
 
+/// Protocol version used by network protocol open
 pub type ProtocolVersion = String;

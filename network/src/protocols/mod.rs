@@ -22,11 +22,13 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio_util::codec::length_delimited;
 
+/// Alias session id
 pub type PeerIndex = SessionId;
+/// Boxed future task
 pub type BoxedFutureTask = Pin<Box<dyn Future<Output = ()> + 'static + Send>>;
 
 use crate::{
@@ -35,45 +37,61 @@ use crate::{
     Behaviour, Error, NetworkState, Peer, ProtocolVersion,
 };
 
+/// Abstract protocol context
 pub trait CKBProtocolContext: Send {
+    /// Set notify to tentacle
     // Interact with underlying p2p service
     fn set_notify(&self, interval: Duration, token: u64) -> Result<(), Error>;
+    /// Remove notify
     fn remove_notify(&self, token: u64) -> Result<(), Error>;
+    /// Send message through quick queue
     fn quick_send_message(
         &self,
         proto_id: ProtocolId,
         peer_index: PeerIndex,
         data: Bytes,
     ) -> Result<(), Error>;
+    /// Send message through quick queue
     fn quick_send_message_to(&self, peer_index: PeerIndex, data: Bytes) -> Result<(), Error>;
+    /// Filter broadcast message through quick queue
     fn quick_filter_broadcast(&self, target: TargetSession, data: Bytes) -> Result<(), Error>;
-    // spawn a future task, if `blocking` is true we use tokio_threadpool::blocking to handle the task.
+    /// spawn a future task, if `blocking` is true we use tokio_threadpool::blocking to handle the task.
     fn future_task(&self, task: BoxedFutureTask, blocking: bool) -> Result<(), Error>;
+    /// Send message
     fn send_message(
         &self,
         proto_id: ProtocolId,
         peer_index: PeerIndex,
         data: Bytes,
     ) -> Result<(), Error>;
+    /// Send message
     fn send_message_to(&self, peer_index: PeerIndex, data: Bytes) -> Result<(), Error>;
-    // TODO allow broadcast to target ProtocolId
+    /// Filter broadcast message
     fn filter_broadcast(&self, target: TargetSession, data: Bytes) -> Result<(), Error>;
+    /// Disconnect session
     fn disconnect(&self, peer_index: PeerIndex, message: &str) -> Result<(), Error>;
     // Interact with NetworkState
+    /// Get peer info
     fn get_peer(&self, peer_index: PeerIndex) -> Option<Peer>;
+    /// Modify peer info
     fn with_peer_mut(&self, peer_index: PeerIndex, f: Box<dyn FnOnce(&mut Peer)>);
+    /// Get all session id
     fn connected_peers(&self) -> Vec<PeerIndex>;
+    /// Report peer behavior
     fn report_peer(&self, peer_index: PeerIndex, behaviour: Behaviour);
+    /// Ban peer
     fn ban_peer(&self, peer_index: PeerIndex, duration: Duration, reason: String);
-    fn send_paused(&self) -> bool;
-    // Other methods
+    /// current protocol id
     fn protocol_id(&self) -> ProtocolId;
+    /// Raw tentacle controller
     fn p2p_control(&self) -> Option<&ServiceControl> {
         None
     }
 }
 
+/// Abstract protocol handle base on tentacle service handle
 pub trait CKBProtocolHandler: Sync + Send {
+    /// Init action on service run
     fn init(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>);
     /// Called when opening protocol
     fn connected(
@@ -101,6 +119,7 @@ pub trait CKBProtocolHandler: Sync + Send {
     }
 }
 
+/// Help to build protocol meta
 pub struct CKBProtocol {
     id: ProtocolId,
     // for example: b"/ckb/"
@@ -114,6 +133,7 @@ pub struct CKBProtocol {
 }
 
 impl CKBProtocol {
+    /// New with support protocol
     // a helper constructor to build `CKBProtocol` with `SupportProtocols` enum
     pub fn new_with_support_protocol(
         support_protocol: support_protocols::SupportProtocols,
@@ -131,6 +151,7 @@ impl CKBProtocol {
         }
     }
 
+    /// New with all config
     pub fn new(
         protocol_name: String,
         id: ProtocolId,
@@ -148,6 +169,8 @@ impl CKBProtocol {
             protocol_name: format!("/ckb/{}", protocol_name),
             supported_versions: {
                 let mut versions: Vec<_> = versions.to_vec();
+                // TODO: https://github.com/rust-lang/rust-clippy/issues/6001
+                #[allow(clippy::unnecessary_sort_by)]
                 versions.sort_by(|a, b| b.cmp(a));
                 versions.to_vec()
             },
@@ -155,18 +178,22 @@ impl CKBProtocol {
         }
     }
 
+    /// Protocol id
     pub fn id(&self) -> ProtocolId {
         self.id
     }
 
+    /// Protocol name
     pub fn protocol_name(&self) -> String {
         self.protocol_name.clone()
     }
 
+    /// Whether support this version
     pub fn match_version(&self, version: ProtocolVersion) -> bool {
         self.supported_versions.contains(&version)
     }
 
+    /// Build to tentacle protocol meta
     pub fn build(self) -> ProtocolMeta {
         let protocol_name = self.protocol_name();
         let max_frame_length = self.max_frame_length;
@@ -214,7 +241,6 @@ impl ServiceProtocol for CKBHandler {
             proto_id: self.proto_id,
             network_state: Arc::clone(&self.network_state),
             p2p_control: context.control().to_owned(),
-            send_paused: false,
         };
         nc.set_notify(Duration::from_secs(6), std::u64::MAX)
             .expect("set_notify at init should be ok");
@@ -232,13 +258,10 @@ impl ServiceProtocol for CKBHandler {
             return;
         }
 
-        let pending_data_size = context.session.pending_data_size();
-        let send_paused = pending_data_size >= self.network_state.config.max_send_buffer();
         let nc = DefaultCKBProtocolContext {
             proto_id: self.proto_id,
             network_state: Arc::clone(&self.network_state),
             p2p_control: context.control().to_owned(),
-            send_paused,
         };
         let peer_index = context.session.id;
         self.handler.connected(Arc::new(nc), peer_index, version);
@@ -255,25 +278,16 @@ impl ServiceProtocol for CKBHandler {
             return;
         }
 
-        let pending_data_size = context.session.pending_data_size();
-        let send_paused = pending_data_size >= self.network_state.config.max_send_buffer();
         let nc = DefaultCKBProtocolContext {
             proto_id: self.proto_id,
             network_state: Arc::clone(&self.network_state),
             p2p_control: context.control().to_owned(),
-            send_paused,
         };
         let peer_index = context.session.id;
         self.handler.disconnected(Arc::new(nc), peer_index);
     }
 
     fn received(&mut self, context: ProtocolContextMutRef, data: Bytes) {
-        self.network_state.with_peer_registry_mut(|reg| {
-            if let Some(peer) = reg.get_peer_mut(context.session.id) {
-                peer.last_message_time = Some(Instant::now());
-            }
-        });
-
         if !self.network_state.is_active() {
             return;
         }
@@ -284,13 +298,10 @@ impl ServiceProtocol for CKBHandler {
             context.session.id,
             data.len()
         );
-        let pending_data_size = context.session.pending_data_size();
-        let send_paused = pending_data_size >= self.network_state.config.max_send_buffer();
         let nc = DefaultCKBProtocolContext {
             proto_id: self.proto_id,
             network_state: Arc::clone(&self.network_state),
             p2p_control: context.control().to_owned(),
-            send_paused,
         };
         let peer_index = context.session.id;
         self.handler.received(Arc::new(nc), peer_index, data);
@@ -308,7 +319,6 @@ impl ServiceProtocol for CKBHandler {
                 proto_id: self.proto_id,
                 network_state: Arc::clone(&self.network_state),
                 p2p_control: context.control().to_owned(),
-                send_paused: false,
             };
             self.handler.notify(Arc::new(nc), token);
         }
@@ -323,7 +333,6 @@ impl ServiceProtocol for CKBHandler {
             proto_id: self.proto_id,
             network_state: Arc::clone(&self.network_state),
             p2p_control: context.control().to_owned(),
-            send_paused: false,
         };
         self.handler.poll(Arc::new(nc))
     }
@@ -333,7 +342,6 @@ struct DefaultCKBProtocolContext {
     proto_id: ProtocolId,
     network_state: Arc<NetworkState>,
     p2p_control: ServiceControl,
-    send_paused: bool,
 }
 
 impl CKBProtocolContext for DefaultCKBProtocolContext {
@@ -462,10 +470,6 @@ impl CKBProtocolContext for DefaultCKBProtocolContext {
 
     fn protocol_id(&self) -> ProtocolId {
         self.proto_id
-    }
-
-    fn send_paused(&self) -> bool {
-        self.send_paused
     }
 
     fn p2p_control(&self) -> Option<&ServiceControl> {

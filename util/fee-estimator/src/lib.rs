@@ -1,3 +1,5 @@
+//! CKB builtin fee estimator.
+
 mod estimator;
 mod fee_rate;
 mod tx_confirm_stat;

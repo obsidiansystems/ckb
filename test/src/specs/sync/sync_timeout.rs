@@ -1,42 +1,42 @@
-use crate::{Net, Spec};
-use log::info;
+use crate::node::{disconnect_all, waiting_for_sync};
+use crate::util::mining::mine;
+use crate::{Node, Spec};
+use ckb_logger::info;
 
 pub struct SyncTimeout;
 
 impl Spec for SyncTimeout {
-    crate::name!("sync_timeout");
+    crate::setup!(num_nodes: 5);
 
-    crate::setup!(num_nodes: 5, connect_all: false);
-
-    fn run(&self, net: &mut Net) {
-        let node0 = &net.nodes[0];
-        let node1 = &net.nodes[1];
-        let node2 = &net.nodes[2];
-        let node3 = &net.nodes[3];
-        let node4 = &net.nodes[4];
+    fn run(&self, nodes: &mut Vec<Node>) {
+        let node0 = &nodes[0];
+        let node1 = &nodes[1];
+        let node2 = &nodes[2];
+        let node3 = &nodes[3];
+        let node4 = &nodes[4];
 
         info!("Generate 2 blocks on node0");
-        node0.generate_blocks(2);
+        mine(node0, 2);
 
         info!("Connect all nodes");
         node1.connect(node0);
         node2.connect(node0);
         node3.connect(node0);
         node4.connect(node0);
-        net.waiting_for_sync(2);
+        waiting_for_sync(nodes);
 
         info!("Disconnect all nodes");
-        net.disconnect_all();
+        disconnect_all(nodes);
 
         info!("Generate 200 blocks on node0");
-        node0.generate_blocks(200);
+        mine(node0, 200);
 
         node0.connect(node1);
         info!("Waiting for node0 and node1 sync");
-        node0.waiting_for_sync(node1, 202);
+        waiting_for_sync(&[node0, node1]);
 
         info!("Generate 200 blocks on node1");
-        node1.generate_blocks(200);
+        mine(node1, 200);
 
         node2.connect(node0);
         node2.connect(node1);
@@ -45,6 +45,6 @@ impl Spec for SyncTimeout {
         node4.connect(node0);
         node4.connect(node1);
         info!("Waiting for all nodes sync");
-        net.waiting_for_sync(402);
+        waiting_for_sync(nodes);
     }
 }

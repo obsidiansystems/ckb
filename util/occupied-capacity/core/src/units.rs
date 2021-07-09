@@ -1,54 +1,72 @@
 use serde::{Deserialize, Serialize};
 
-// The inner is the amount of `Shannons`.
+/// CKB capacity.
+///
+/// It is encoded as the amount of `Shannons` internally.
 #[derive(
     Debug, Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
 pub struct Capacity(u64);
 
+/// Represents the ratio `numerator / denominator`, where `numerator` and `denominator` are both
+/// unsigned 64-bit integers.
 #[derive(Clone, PartialEq, Debug, Eq, Copy, Deserialize, Serialize)]
-pub struct Ratio(pub u64, pub u64);
+pub struct Ratio {
+    /// Numerator.
+    numer: u64,
+    /// Denominator.
+    denom: u64,
+}
 
 impl Ratio {
+    /// Creates a ratio numer / denom.
+    pub const fn new(numer: u64, denom: u64) -> Self {
+        Self { numer, denom }
+    }
+
+    /// The numerator in ratio numerator / denominator.
     pub fn numer(&self) -> u64 {
-        self.0
+        self.numer
     }
 
+    /// The denominator in ratio numerator / denominator.
     pub fn denom(&self) -> u64 {
-        self.1
+        self.denom
     }
 }
 
-pub trait AsCapacity {
-    fn as_capacity(self) -> Capacity;
+/// Conversion into `Capacity`.
+pub trait IntoCapacity {
+    /// Converts `self` into `Capacity`.
+    fn into_capacity(self) -> Capacity;
 }
 
-impl AsCapacity for Capacity {
-    fn as_capacity(self) -> Capacity {
+impl IntoCapacity for Capacity {
+    fn into_capacity(self) -> Capacity {
         self
     }
 }
 
-impl AsCapacity for u64 {
-    fn as_capacity(self) -> Capacity {
+impl IntoCapacity for u64 {
+    fn into_capacity(self) -> Capacity {
         Capacity::shannons(self)
     }
 }
 
-impl AsCapacity for u32 {
-    fn as_capacity(self) -> Capacity {
+impl IntoCapacity for u32 {
+    fn into_capacity(self) -> Capacity {
         Capacity::shannons(u64::from(self))
     }
 }
 
-impl AsCapacity for u16 {
-    fn as_capacity(self) -> Capacity {
+impl IntoCapacity for u16 {
+    fn into_capacity(self) -> Capacity {
         Capacity::shannons(u64::from(self))
     }
 }
 
-impl AsCapacity for u8 {
-    fn as_capacity(self) -> Capacity {
+impl IntoCapacity for u8 {
+    fn into_capacity(self) -> Capacity {
         Capacity::shannons(u64::from(self))
     }
 }
@@ -56,8 +74,10 @@ impl AsCapacity for u8 {
 // A `Byte` contains how many `Shannons`.
 const BYTE_SHANNONS: u64 = 100_000_000;
 
+/// Numeric errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// Numeric overflow.
     Overflow,
 }
 
@@ -69,21 +89,26 @@ impl ::std::fmt::Display for Error {
 
 impl ::std::error::Error for Error {}
 
+/// Numeric operation result.
 pub type Result<T> = ::std::result::Result<T, Error>;
 
 impl Capacity {
+    /// Capacity of zero Shannons.
     pub const fn zero() -> Self {
         Capacity(0)
     }
 
+    /// Capacity of one Shannon.
     pub const fn one() -> Self {
         Capacity(1)
     }
 
+    /// Views the capacity as Shannons.
     pub const fn shannons(val: u64) -> Self {
         Capacity(val)
     }
 
+    /// Views the capacity as CKBytes.
     pub fn bytes(val: usize) -> Result<Self> {
         (val as u64)
             .checked_mul(BYTE_SHANNONS)
@@ -91,31 +116,36 @@ impl Capacity {
             .ok_or(Error::Overflow)
     }
 
+    /// Views the capacity as Shannons.
     pub fn as_u64(self) -> u64 {
         self.0
     }
 
-    pub fn safe_add<C: AsCapacity>(self, rhs: C) -> Result<Self> {
+    /// Adds self and rhs and checks overflow error.
+    pub fn safe_add<C: IntoCapacity>(self, rhs: C) -> Result<Self> {
         self.0
-            .checked_add(rhs.as_capacity().0)
+            .checked_add(rhs.into_capacity().0)
             .map(Capacity::shannons)
             .ok_or(Error::Overflow)
     }
 
-    pub fn safe_sub<C: AsCapacity>(self, rhs: C) -> Result<Self> {
+    /// Subtracts self and rhs and checks overflow error.
+    pub fn safe_sub<C: IntoCapacity>(self, rhs: C) -> Result<Self> {
         self.0
-            .checked_sub(rhs.as_capacity().0)
+            .checked_sub(rhs.into_capacity().0)
             .map(Capacity::shannons)
             .ok_or(Error::Overflow)
     }
 
-    pub fn safe_mul<C: AsCapacity>(self, rhs: C) -> Result<Self> {
+    /// Multiplies self and rhs and checks overflow error.
+    pub fn safe_mul<C: IntoCapacity>(self, rhs: C) -> Result<Self> {
         self.0
-            .checked_mul(rhs.as_capacity().0)
+            .checked_mul(rhs.into_capacity().0)
             .map(Capacity::shannons)
             .ok_or(Error::Overflow)
     }
 
+    /// Multiplies self with a ratio and checks overflow error.
     pub fn safe_mul_ratio(self, ratio: Ratio) -> Result<Self> {
         self.0
             .checked_mul(ratio.numer())

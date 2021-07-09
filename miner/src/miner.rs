@@ -11,26 +11,38 @@ use ckb_types::{
     utilities::compact_to_target,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use lru_cache::LruCache;
+use lru::LruCache;
 use std::sync::Arc;
 use std::thread;
 
 const WORK_CACHE_SIZE: usize = 32;
 
+/// TODO(doc): @quake
 pub struct Miner {
+    /// TODO(doc): @quake
     pub pow: Arc<dyn PowEngine>,
+    /// TODO(doc): @quake
     pub client: Client,
+    /// TODO(doc): @quake
     pub works: LruCache<Byte32, Work>,
+    /// TODO(doc): @quake
     pub worker_controllers: Vec<WorkerController>,
+    /// TODO(doc): @quake
     pub work_rx: Receiver<Work>,
+    /// TODO(doc): @quake
     pub nonce_rx: Receiver<(Byte32, u128)>,
+    /// TODO(doc): @quake
     pub pb: ProgressBar,
+    /// TODO(doc): @quake
     pub nonces_found: u128,
+    /// TODO(doc): @quake
     pub stderr_is_tty: bool,
+    /// TODO(doc): @quake
     pub limit: u128,
 }
 
 impl Miner {
+    /// TODO(doc): @quake
     pub fn new(
         pow: Arc<dyn PowEngine>,
         client: Client,
@@ -49,7 +61,7 @@ impl Miner {
         let pb = mp.add(ProgressBar::new(100));
         pb.set_style(ProgressStyle::default_bar().template("{msg:.green}"));
 
-        let stderr_is_tty = console::Term::stderr().is_term();
+        let stderr_is_tty = console::Term::stderr().features().is_attended();
 
         thread::spawn(move || {
             mp.join().expect("MultiProgress join failed");
@@ -69,6 +81,7 @@ impl Miner {
         }
     }
 
+    /// TODO(doc): @quake
     // remove `allow` tag when https://github.com/crossbeam-rs/crossbeam/issues/404 is solved
     #[allow(clippy::zero_ptr, clippy::drop_copy)]
     pub fn run(&mut self) {
@@ -78,7 +91,7 @@ impl Miner {
                     Ok(work) => {
                         let pow_hash= work.block.header().calc_pow_hash();
                         let (target, _,) = compact_to_target(work.block.header().raw().compact_target().unpack());
-                        self.works.insert(pow_hash.clone(), work);
+                        self.works.put(pow_hash.clone(), work);
                         self.notify_workers(WorkerMessage::NewWork{pow_hash, target});
                     },
                     _ => {
@@ -103,7 +116,7 @@ impl Miner {
     }
 
     fn submit_nonce(&mut self, pow_hash: Byte32, nonce: u128) {
-        if let Some(work) = self.works.get_refresh(&pow_hash).cloned() {
+        if let Some(work) = self.works.get(&pow_hash).cloned() {
             self.notify_workers(WorkerMessage::Stop);
             let raw_header = work.block.header().raw();
             let header = Header::new_builder()
@@ -132,7 +145,7 @@ impl Miner {
                 self.pb
                     .println(format!("Found! #{} {:#x}", block.number(), block_hash));
                 self.pb
-                    .set_message(&format!("Total nonces found: {:>3}", self.nonces_found));
+                    .set_message(format!("Total nonces found: {:>3}", self.nonces_found));
                 self.pb.inc(1);
             }
         }

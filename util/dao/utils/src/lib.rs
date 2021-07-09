@@ -1,5 +1,4 @@
-#[macro_use]
-extern crate enum_display_derive;
+//! This crate provides several util functions to operate the dao field and NervosDAO related errors.
 
 mod error;
 
@@ -16,19 +15,24 @@ use std::collections::HashSet;
 pub use crate::error::DaoError;
 
 // This is multiplied by 10**16 to make sure we have enough precision.
-pub const DEFAULT_ACCUMULATED_RATE: u64 = 10_000_000_000_000_000;
+const DEFAULT_GENESIS_ACCUMULATE_RATE: u64 = 10_000_000_000_000_000;
 
-// NOTICE Used for testing only
+/// Calculate the dao field for the genesis block.
+///
+/// NOTE: Used for testing only!
+#[doc(hidden)]
 pub fn genesis_dao_data(txs: Vec<&TransactionView>) -> Result<Byte32, Error> {
     genesis_dao_data_with_satoshi_gift(
         txs,
         &H160([0u8; 20]),
-        Ratio(1, 1),
+        Ratio::new(1, 1),
         capacity_bytes!(1_000_000),
         capacity_bytes!(1000),
     )
 }
 
+/// Calculate the dao field for the genesis block.
+#[doc(hidden)]
 pub fn genesis_dao_data_with_satoshi_gift(
     txs: Vec<&TransactionView>,
     satoshi_pubkey_hash: &H160,
@@ -88,13 +92,16 @@ pub fn genesis_dao_data_with_satoshi_gift(
         return Err(DaoError::ZeroC.into());
     }
     Ok(pack_dao_data(
-        DEFAULT_ACCUMULATED_RATE,
+        DEFAULT_GENESIS_ACCUMULATE_RATE,
         c,
         initial_secondary_issuance,
         u,
     ))
 }
 
+/// Extract `ar`, `c`, `s`, and `u` from [`Byte32`].
+///
+/// [`Byte32`]: ../ckb_types/packed/struct.Byte32.html
 pub fn extract_dao_data(dao: Byte32) -> Result<(u64, Capacity, Capacity, Capacity), Error> {
     let data = dao.raw_data();
     let c = Capacity::shannons(LittleEndian::read_u64(&data[0..8]));
@@ -104,6 +111,9 @@ pub fn extract_dao_data(dao: Byte32) -> Result<(u64, Capacity, Capacity, Capacit
     Ok((ar, c, s, u))
 }
 
+/// Pack `ar`, `c`, `s`, and `u` into [`Byte32`] in little endian.
+///
+/// [`Byte32`]: ../ckb_types/packed/struct.Byte32.html
 pub fn pack_dao_data(ar: u64, c: Capacity, s: Capacity, u: Capacity) -> Byte32 {
     let mut buf = [0u8; 32];
     LittleEndian::write_u64(&mut buf[0..8], c.as_u64());

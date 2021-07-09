@@ -2,14 +2,23 @@ use ckb_types::{packed, prelude::*};
 use faster_hex::{hex_decode, hex_encode};
 use std::fmt;
 
+/// The 10-byte fixed-length binary encoded as a 0x-prefixed hex string in JSON.
+///
+/// ## Example
+///
+/// ```text
+/// 0xa0ef4eb5f4ceeb08a4c8
+/// ```
 #[derive(Clone, Default, PartialEq, Eq, Hash, Debug)]
 pub struct ProposalShortId(pub [u8; 10]);
 
 impl ProposalShortId {
+    /// Creates the proposal id from array.
     pub fn new(inner: [u8; 10]) -> ProposalShortId {
         ProposalShortId(inner)
     }
 
+    /// Converts into the inner bytes array.
     pub fn into_inner(self) -> [u8; 10] {
         self.0
     }

@@ -1,4 +1,4 @@
-use crate::{BAD_MESSAGE_BAN_TIME, SYNC_USELESS_BAN_TIME};
+use ckb_constant::sync::{BAD_MESSAGE_BAN_TIME, SYNC_USELESS_BAN_TIME};
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
@@ -61,6 +61,10 @@ pub enum StatusCode {
     CompactBlockRequiresFreshTransactions = 107,
     /// CompactBlock short-ids collision
     CompactBlockMeetsShortIdsCollision = 108,
+    /// In-flight blocks limit exceeded
+    BlocksInFlightReachLimit = 109,
+    /// Generic rate limit error
+    TooManyRequests = 110,
 
     ///////////////////////////////////
     //      Malformed Errors 4xx     //
@@ -95,9 +99,8 @@ pub enum StatusCode {
     BlockUnclesAreUnmatchedWithPendingCompactBlock = 413,
     /// Cannot locate the common blocks based on the GetHeaders
     GetHeadersMissCommonAncestors = 414,
-
-    /// Generic rate limit error
-    TooManyRequests = 429,
+    /// Headers verified failed
+    HeadersIsInvalid = 415,
 
     ///////////////////////////////////
     //      Warning 5xx              //
@@ -106,16 +109,16 @@ pub enum StatusCode {
     TxPool = 501,
     /// Errors returned from the network layer
     Network = 502,
-    /// In-flight blocks limit exceeded
-    BlocksInFlightReachLimit = 503,
 }
 
 impl StatusCode {
+    /// Code with context
     pub fn with_context<S: ToString>(self, context: S) -> Status {
         Status::new(self, Some(context))
     }
 }
 
+/// Process message status
 #[derive(Clone, Debug, Eq)]
 pub struct Status {
     code: StatusCode,
@@ -123,6 +126,7 @@ pub struct Status {
 }
 
 impl Status {
+    /// New with code
     pub fn new<S: ToString>(code: StatusCode, context: Option<S>) -> Self {
         Self {
             code,
@@ -130,18 +134,22 @@ impl Status {
         }
     }
 
+    /// Ok status
     pub fn ok() -> Self {
         Self::new::<&str>(StatusCode::OK, None)
     }
 
+    /// Ignored status
     pub fn ignored() -> Self {
         Self::new::<&str>(StatusCode::Ignored, None)
     }
 
+    /// Whether ok
     pub fn is_ok(&self) -> bool {
         self.code == StatusCode::OK
     }
 
+    /// Whether should ban session
     pub fn should_ban(&self) -> Option<Duration> {
         if !(400..500).contains(&(self.code as u16)) {
             return None;
@@ -152,16 +160,14 @@ impl Status {
         }
     }
 
+    /// Whether should output a warning log
     pub fn should_warn(&self) -> bool {
         self.code as u16 >= 500
     }
 
+    /// Status code
     pub fn code(&self) -> StatusCode {
         self.code
-    }
-
-    pub(crate) fn tag(&self) -> String {
-        format!("{:?}", self.code)
     }
 }
 

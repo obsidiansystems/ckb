@@ -18,10 +18,12 @@ pub struct Import {
 }
 
 impl Import {
+    /// Creates a new import job.
     pub fn new(chain: ChainController, source: PathBuf) -> Self {
         Import { chain, source }
     }
 
+    /// Executes the import job.
     pub fn execute(self) -> Result<(), Box<dyn Error>> {
         self.read_from_json()
     }
@@ -44,6 +46,7 @@ impl Import {
         Ok(())
     }
 
+    /// Imports the chain from the JSON file.
     #[cfg(feature = "progress_bar")]
     pub fn read_from_json(&self) -> Result<(), Box<dyn Error>> {
         let metadata = fs::metadata(&self.source)?;
